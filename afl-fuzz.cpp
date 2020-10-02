@@ -1958,22 +1958,24 @@ void write_to_testcase(void* mem, u32 len) {
 
 	if (out_file) {
 
-		_unlink(out_file); /* Ignore errors. */
+		_unlink(out_file); /* ignore errors */
 
 		fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
-
-		//u32 count = 0;
-
-		while (fd < 0) {
-
-			//if (count++ > 100) PFATAL("Unable to create '%s'", out_file);
-
+		if (fd < 0) {
 			SafeTerminateProcess();
-
-			_unlink(out_file); /* Ignore errors. */
-
+			_unlink(out_file); /* ignore errors */
 			fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
-
+			if (fd < 0) {
+				if (errno == EEXIST) {
+					fd = open(out_file, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
+					if (fd < 0) {
+						PFATAL("Unable to create '%s'", out_file);
+					}
+				}
+				else {
+					PFATAL("Unable to create '%s'", out_file);
+				}
+			}
 		}
 
 	}
@@ -2000,22 +2002,24 @@ void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
 
 	if (out_file) {
 
-		_unlink(out_file); /* Ignore errors. */
+		_unlink(out_file); /* ignore errors */
 
-		fd = _open(out_file, O_WRONLY | O_CREAT | O_EXCL, 0600);
-
-		//u32 count = 0;
-
-		while (fd < 0) {
-
-			//if (count++ > 100) PFATAL("Unable to create '%s'", out_file);
-
+		fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
+		if (fd < 0) {
 			SafeTerminateProcess();
-
-			_unlink(out_file); /* Ignore errors. */
-
+			_unlink(out_file); /* ignore errors */
 			fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
-
+			if (fd < 0) {
+				if (errno == EEXIST) {
+					fd = open(out_file, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
+					if (fd < 0) {
+						PFATAL("Unable to create '%s'", out_file);
+					}
+				}
+				else {
+					PFATAL("Unable to create '%s'", out_file);
+				}
+			}
 		}
 
 	}

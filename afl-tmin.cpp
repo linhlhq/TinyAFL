@@ -360,6 +360,7 @@ static void read_initial_file(void) {
 
 void SafeTerminateProcess() {
 	instrumentation->Kill();
+	cur_iteration = 0;
 }
 
 
@@ -369,14 +370,24 @@ static s32 write_to_file(u8* path, u8* mem, u32 len) {
 
 	s32 fd;
 
-	_unlink(path); /* Ignore errors */
-	fd = _open(path, O_RDWR | O_BINARY | O_CREAT | O_EXCL, 0600);
-	u32 count = 0;
-	while (fd < 0) {
-		//if (count++ > 100) PFATAL("Unable to create '%s'", path);
-		_unlink(path); /* Ignore errors */
-		fd = _open(path, O_RDWR | O_BINARY | O_CREAT | O_EXCL, 0600);
+	_unlink(path); /* ignore errors */
 
+	fd = _open(path, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
+	if (fd < 0) {
+		SafeTerminateProcess();
+		_unlink(path); /* ignore errors */
+		fd = _open(path, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
+		if (fd < 0) {
+			if (errno == EEXIST) {
+				fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
+				if (fd < 0) {
+					PFATAL("Unable to create '%s'", path);
+				}
+			}
+			else {
+				PFATAL("Unable to create '%s'", path);
+			}
+		}
 	}
 
 	ck_write(fd, mem, len, path);
