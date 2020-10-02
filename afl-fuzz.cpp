@@ -1962,11 +1962,11 @@ void write_to_testcase(void* mem, u32 len) {
 
 		fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
 
-		u32 count = 0;
+		//u32 count = 0;
 
 		while (fd < 0) {
 
-			if (count++ > 100) PFATAL("Unable to create '%s'", out_file);
+			//if (count++ > 100) PFATAL("Unable to create '%s'", out_file);
 
 			SafeTerminateProcess();
 
@@ -2004,11 +2004,11 @@ void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
 
 		fd = _open(out_file, O_WRONLY | O_CREAT | O_EXCL, 0600);
 
-		u32 count = 0;
+		//u32 count = 0;
 
 		while (fd < 0) {
 
-			if (count++ > 100) PFATAL("Unable to create '%s'", out_file);
+			//if (count++ > 100) PFATAL("Unable to create '%s'", out_file);
 
 			SafeTerminateProcess();
 
