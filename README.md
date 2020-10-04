@@ -16,7 +16,11 @@ I have reported some MediaFoundations bugs using this tool. Such as CVE-2020-131
 ## Features of TinyAFL
 TinyAFL works similarly to WinAFL. However I use TinyInst (commit [0bf83dc45fc14c43c7bf165a91820b92e5565add](https://github.com/googleprojectzero/TinyInst/tree/0bf83dc45fc14c43c7bf165a91820b92e5565add)) for coverage. More about TinyInst can be found [here](https://github.com/googleprojectzero/TinyInst/blob/0bf83dc45fc14c43c7bf165a91820b92e5565add/README.md).
 
-I will update some more features like afl-fast and afl-mopt.
+TinyAFL supports [AFLfast](https://github.com/mboehme/aflfastTinyAFL)'s power schedules by Marcel Böhme and MOpt mutator of [afl-mopt](https://github.com/puppet-meteor/MOpt-AFL). I add these features based on [afl++](https://github.com/AFLplusplus/AFLplusplus)
+
+<p align="center">
+<img alt="AFL.exe" src="screenshots/status.gif"/>
+</p>
 
 ## Building TinyAFL
 1. Open a terminal and set up your build environment (e.g. On Windows, run vcvars64.bat / vcvars32.bat)
@@ -36,17 +40,39 @@ AFL.exe [ afl options ] -- target_cmd_line
 ```
 The following TinyAFL options are supported:
 ```
+Required parameters:
+
   -i dir        - input directory with test cases
   -o dir        - output directory for fuzzer findings
+
+Execution control settings:
+
+  -p schedule   - power schedules recompute a seed's performance score.
+                  <explore(default), fast, coe, lin, quad, exploit, mmopt, rare, seek>
+  -f file       - location read by the fuzzed program (stdin)
   -t msec       - timeout for each run
-  -x dir        - optional fuzzer dictionary
-  -M \\ -S id   - distributed mode
+  -Q            - use binary-only instrumentation (QEMU mode)
+
+Mutator settings:
+  -L minutes    - use MOpt(imize) mode and set the time limit for entering the
+                  pacemaker mode (minutes of no new paths). 0 = immediately,
+                  -1 = immediately and together with normal mutation).
+
+Fuzzing behavior settings:
+
+  -x dir        - optional fuzzer dictionary (see README)
+
+Other stuff:
+
+  -M / -S id    - distributed mode (see parallel_fuzzing.txt)
+  -C            - crash exploration mode (the peruvian rabbit thing)
+
   -e ext        - file extension for the fuzz test input file (if needed)
 ```
 To see the supported instrument flags, please refer to the mode-specific documentation at TinyInst
 #### Example command TinyAFL 
 ```
-AFL.exe -i in -o out -t 10000 -callconv fastcall -target_offset 0x1260 -nargs 2 -loop -persist -iterations 10000 -instrument_module demo.dll -target_module test.exe -- test.exe @@
+AFL.exe -i in -o out -p fast -t 10000 -callconv fastcall -target_offset 0x1260 -nargs 2 -loop -persist -iterations 10000 -instrument_module demo.dll -target_module test.exe -- test.exe @@
 ```
 #### Corpus minimization
 ```
