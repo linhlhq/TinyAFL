@@ -23,13 +23,22 @@ TinyAFL supports [AFLfast](https://github.com/mboehme/aflfastTinyAFL)'s power sc
 </p>
 
 ## Building TinyAFL
+Although TinyAFL x64 can run both for 32bit and 64bit targets, I still recommend TinyAFL 32bit for 32bit targets and TinyAFL 64bit for 64bit targets.
+
 1. Open a terminal and set up your build environment (e.g. On Windows, run vcvars64.bat / vcvars32.bat)
 2. Navigate to the directory containing the source
 3. Run the following commands (change the generator according to the version of IDE and platform you want to build for):
-#### Windows
+#### For a 32-bit build
 ```
-mkdir build
-cd build
+mkdir build32
+cd build32
+cmake -G"Visual Studio 15 2017" ..
+cmake --build . --config Release
+```
+#### For a 64-bit build
+```
+mkdir build64
+cd build64
 cmake -G"Visual Studio 15 2017 Win64" ..
 cmake --build . --config Release
 ```
