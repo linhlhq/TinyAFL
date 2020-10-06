@@ -16,7 +16,7 @@ I have reported some MediaFoundations bugs using this tool. Such as CVE-2020-131
 ## Features of TinyAFL
 TinyAFL works similarly to WinAFL. However I use TinyInst (commit [e098622dd421f808eba027d62e126134b812f4c8](https://github.com/googleprojectzero/TinyInst/tree/e098622dd421f808eba027d62e126134b812f4c8)) for coverage. More about TinyInst can be found [here](https://github.com/googleprojectzero/TinyInst/blob/e098622dd421f808eba027d62e126134b812f4c8/README.md).
 
-TinyAFL supports [AFLfast](https://github.com/mboehme/aflfastTinyAFL)'s power schedules by Marcel Böhme and MOpt mutator of [afl-mopt](https://github.com/puppet-meteor/MOpt-AFL). I add these features based on [afl++](https://github.com/AFLplusplus/AFLplusplus)
+TinyAFL supports [AFLfast](https://github.com/mboehme/aflfastTinyAFL)'s power schedules by Marcel Böhme and MOpt mutator of [MOpt-AFL](https://github.com/puppet-meteor/MOpt-AFL). I add these features based on [afl++](https://github.com/AFLplusplus/AFLplusplus)
 
 <p align="center">
 <img alt="AFL.exe" src="screenshots/status.gif"/>
