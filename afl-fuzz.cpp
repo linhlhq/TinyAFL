@@ -6476,8 +6476,6 @@ u8 pilot_fuzzing(int argc, char** argv) {
 
 	orig_perf = perf_score = calculate_score(queue_cur);
 
-	if (perf_score == 0) goto abandon_entry;
-
 	/* Go to pacemker fuzzing if MOpt is doing well */
 
 	cur_ms_lv = get_cur_time();
