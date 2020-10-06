@@ -14,7 +14,7 @@ I have reported some MediaFoundations bugs using this tool. Such as CVE-2020-131
   3. [How to fuzz a target](#how-to-fuzz-with-tinyafl)
 
 ## Features of TinyAFL
-TinyAFL works similarly to WinAFL. However I use TinyInst (commit [0bf83dc45fc14c43c7bf165a91820b92e5565add](https://github.com/googleprojectzero/TinyInst/tree/0bf83dc45fc14c43c7bf165a91820b92e5565add)) for coverage. More about TinyInst can be found [here](https://github.com/googleprojectzero/TinyInst/blob/0bf83dc45fc14c43c7bf165a91820b92e5565add/README.md).
+TinyAFL works similarly to WinAFL. However I use TinyInst (commit [e098622dd421f808eba027d62e126134b812f4c8](https://github.com/googleprojectzero/TinyInst/tree/e098622dd421f808eba027d62e126134b812f4c8)) for coverage. More about TinyInst can be found [here](https://github.com/googleprojectzero/TinyInst/blob/e098622dd421f808eba027d62e126134b812f4c8/README.md).
 
 TinyAFL supports [AFLfast](https://github.com/mboehme/aflfastTinyAFL)'s power schedules by Marcel Böhme and MOpt mutator of [afl-mopt](https://github.com/puppet-meteor/MOpt-AFL). I add these features based on [afl++](https://github.com/AFLplusplus/AFLplusplus)
 
@@ -57,12 +57,13 @@ Required parameters:
 Execution control settings:
 
   -p schedule   - power schedules recompute a seed's performance score.
-                  <explore(default), fast, coe, lin, quad, exploit, mmopt, rare, seek>
+                  <explore(default), fast, coe, lin, quad, exploit, mmopt, rare>
   -f file       - location read by the fuzzed program (stdin)
   -t msec       - timeout for each run
   -Q            - use binary-only instrumentation (QEMU mode)
 
 Mutator settings:
+
   -L minutes    - use MOpt(imize) mode and set the time limit for entering the
                   pacemaker mode (minutes of no new paths). 0 = immediately,
                   -1 = immediately and together with normal mutation).
@@ -75,10 +76,15 @@ Other stuff:
 
   -M / -S id    - distributed mode (see parallel_fuzzing.txt)
   -C            - crash exploration mode (the peruvian rabbit thing)
-
   -e ext        - file extension for the fuzz test input file (if needed)
+  -header_only  - mutate only header of testcase (if needed)
+  -size_of_header  - size of header will mutate when use option -header_only (default: 0x200)
+
+tiny-afl settings:
+
+  -instrument_module path       - path to instrumented PE
 ```
-To see the supported instrument flags, please refer to the mode-specific documentation at TinyInst
+I add the feature to only mutate the test case header when fuzz (depending on the file format). I believe that some file format exceptions only happen when fields in the header change. To see the supported instrument flags, please refer to the mode-specific documentation at TinyInst.
 #### Example command TinyAFL 
 ```
 AFL.exe -i in -o out -p fast -t 10000 -callconv fastcall -target_offset 0x1260 -nargs 2 -loop -persist -iterations 10000 -instrument_module demo.dll -target_module test.exe -- test.exe @@
