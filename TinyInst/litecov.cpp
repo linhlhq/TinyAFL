@@ -270,6 +270,7 @@ bool LiteCov::OnException(Exception *exception_record)
 }
 
 void LiteCov::ClearRemoteBuffer(ModuleCovData *data) {
+  if (!IsTargetAlive()) return;
   if (!data->coverage_buffer_remote) return;
   if (!data->has_remote_coverage) return;
 
@@ -304,7 +305,7 @@ void LiteCov::ClearCoverage() {
 
 // fetches and decodes coverage from the remote buffer
 void LiteCov::CollectCoverage(ModuleCovData *data) {
-  if (!data->has_remote_coverage) return;
+  if (!IsTargetAlive() || !data->has_remote_coverage) return;
 
   unsigned char *buf = (unsigned char *)malloc(data->coverage_buffer_next);
 
@@ -400,7 +401,9 @@ bool LiteCov::HasNewCoverage() {
 
 void LiteCov::OnProcessExit() {
   TinyInst::OnProcessExit();
-  CollectCoverage();
+  if (IsTargetAlive()) {
+    CollectCoverage();
+  }
 }
 
 uint64_t LiteCov::GetCmpCode(size_t bb_offset, size_t cmp_offset, int bits_match) {
@@ -478,7 +481,6 @@ bool LiteCov::ShouldInstrumentSub(ModuleInfo *module,
     offset += instruction_length;
   }
 }
-
 
 TinyInst::InstructionResult LiteCov::InstrumentInstruction(ModuleInfo *module,
                                                            xed_decoded_inst_t *xedd,
@@ -619,6 +621,9 @@ TinyInst::InstructionResult LiteCov::InstrumentInstruction(ModuleInfo *module,
     FATAL("Unknown CMP first argument at %zx", instruction_address);
   }
 
+  size_t mem_address = 0;
+  bool rip_relative = IsRipRelative(module, xedd, instruction_address, &mem_address);
+  
   // start with NOP that's going to be replaced with
   // JMP when the instrumentation is removed
   WriteCode(module, NOP5, sizeof(NOP5));
@@ -649,23 +654,16 @@ TinyInst::InstructionResult LiteCov::InstrumentInstruction(ModuleInfo *module,
     xed_encoder_request_set_operand_order(&mov, 0, XED_OPERAND_REG0);
 
     CopyOperandFromInstruction(xedd, &mov, operand1_name, operand1_name, 1, stack_offset);
+    
+    if(rip_relative) {
+      FixRipDisplacement(&mov, mem_address, GetCurrentInstrumentedAddress(module));
+    }
 
     xed_error = xed_encode(&mov, encoded, sizeof(encoded), &olen);
     if (xed_error != XED_ERROR_NONE) {
       FATAL("Error encoding instruction");
     }
-
-    // we can't just output this instruction, it might need fixing
-    // unfortunately, we need to convert it back to xed_decoded_inst_t
-    xed_decoded_inst_t tmp_inst;
-    xed_decoded_inst_zero_set_mode(&tmp_inst, &dstate);
-    xed_error = xed_decode(&tmp_inst,
-      (unsigned char *)encoded,
-      (unsigned int)olen);
-    if (xed_error != XED_ERROR_NONE) {
-      FATAL("Error decoding instruction");
-    }
-    FixInstructionAndOutput(module, &tmp_inst, encoded, (unsigned char *)instruction_address, false);
+    WriteCode(module, encoded, olen);
 
     // xor destination_reg, 2nd_param_of_cmp
     xed_encoder_request_t xor_inst;
@@ -686,26 +684,24 @@ TinyInst::InstructionResult LiteCov::InstrumentInstruction(ModuleInfo *module,
 
     CopyOperandFromInstruction(xedd, &xor_inst, operand2_name, dest_operand_name, 1, stack_offset);
 
+    // no need to fix rip displacement here
+    // as we know this won't reference memory
+    
     xed_error = xed_encode(&xor_inst, encoded, sizeof(encoded), &olen);
     if (xed_error != XED_ERROR_NONE) {
       FATAL("Error encoding instruction");
     }
-
-    // we can't just output this instruction, it might need fixing
-    // unfortunately, we need to convert it back to xed_decoded_inst_t
-    xed_decoded_inst_zero_set_mode(&tmp_inst, &dstate);
-    xed_error = xed_decode(&tmp_inst,
-      (unsigned char *)encoded,
-      (unsigned int)olen);
-    if (xed_error != XED_ERROR_NONE) {
-      FATAL("Error decoding instruction");
-    }
-    FixInstructionAndOutput(module, &tmp_inst, encoded, (unsigned char *)instruction_address, false);
+    WriteCode(module, encoded, olen);
 
   } else {
     // just change cmp to xor
     xed_encoder_request_init_from_decode(xedd);
     xed_encoder_request_set_iclass(xedd, XED_ICLASS_XOR);
+
+    if(rip_relative) {
+      FixRipDisplacement(xedd, mem_address, GetCurrentInstrumentedAddress(module));
+    }
+
     xed_error = xed_encode(xedd, encoded, sizeof(encoded), &olen);
     if (xed_error != XED_ERROR_NONE) {
       FATAL("Error encoding instruction");
@@ -755,6 +751,10 @@ TinyInst::InstructionResult LiteCov::InstrumentInstruction(ModuleInfo *module,
 
   olen = Pop(&dstate, destination_reg, encoded);
   WriteCode(module, encoded, olen);
+
+  if (sp_offset) {
+    OffsetStack(module, sp_offset);
+  }
 
   CmpCoverageRecord *cmp_record = new CmpCoverageRecord();
   cmp_record->ignored = false;

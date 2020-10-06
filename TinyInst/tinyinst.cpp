@@ -29,6 +29,9 @@ extern "C" {
 #include "xed/xed-interface.h"
 }
 
+// nop
+unsigned char NOP[] = { 0x90 };
+
 // jmp offset
 unsigned char JMP[] = { 0xe9, 0x00, 0x00, 0x00, 0x00 };
 
@@ -485,12 +488,12 @@ bool TinyInst::HandleBreakpoint(void *address) {
     auto iter = module->tracepoints.find((size_t)address);
     if (iter != module->tracepoints.end()) {
 
-      /*printf("TRACE: Executing basic block, original at %p, instrumented at %p\n",
-             (void *)iter->second, (void *)iter->first);*/
+      printf("TRACE: Executing basic block, original at %p, instrumented at %p\n",
+             (void *)iter->second, (void *)iter->first);
 
       return true;
     } else {
-      //printf("TRACE: Breakpoint\n");
+      printf("TRACE: Breakpoint\n");
     }
   }
 
@@ -1063,6 +1066,15 @@ void TinyInst::TranslateBasicBlock(char *address,
                                 module->instrumented_code_allocated;
     WriteCode(module, &breakpoint, 1);
     module->tracepoints[breakpoint_address] = (size_t)address;
+  } else if (GetTargetMethodAddress()) {
+    // hack, allow 1 byte of unused space at the beginning
+    // of the target method. This is needed because we
+    // are setting a brekpoint here. If this breakpoint falls
+    // into code inserted by the client, and the client modifies
+    // that code later, we loose the breakpoint.
+    if(GetTargetMethodAddress() == address) {
+      WriteCode(module, NOP, sizeof(NOP));
+    }
   }
 
   // write pre-bb instrumentation
@@ -1536,7 +1548,7 @@ void TinyInst::OnCrashed(Exception *exception_record) {
 
   printf("Exception at address %p\n", address);
   if (exception_record->type == ACCESS_VIOLATION) {
-    //printf("Access type: %d\n", (int)exception_record->ExceptionInformation[0]);
+    // printf("Access type: %d\n", (int)exception_record->ExceptionInformation[0]);
     printf("Access address: %p\n", exception_record->access_address);
   }
 
@@ -1601,7 +1613,7 @@ bool TinyInst::TryExecuteInstrumented(char *address) {
   if (!GetRegion(module, (size_t)address)) return false;
 
   if (trace_module_entries) {
-    //printf("TRACE: Entered module %s at address %p\n", module->module_name, address);
+    printf("TRACE: Entered module %s at address %p\n", module->module_name, address);
   }
 
   size_t translated_address = GetTranslatedAddress(module, (size_t)address);
@@ -1632,9 +1644,9 @@ void TinyInst::InstrumentModule(ModuleInfo *module) {
   if (persist_instrumentation_data && module->instrumented) {
     ProtectCodeRanges(&module->executable_ranges);
     FixCrossModuleLinks(module);
-    /*printf("Module %s already instrumented, "
+    printf("Module %s already instrumented, "
            "reusing instrumentation data\n",
-           module->module_name);*/
+           module->module_name);
     return;
   }
 
@@ -1679,8 +1691,8 @@ void TinyInst::InstrumentModule(ModuleInfo *module) {
   module->instrumented = true;
   FixCrossModuleLinks(module);
 
-  /*printf("Instrumented module %s, code size: %zd\n",
-         module->module_name, module->code_size);*/
+  //printf("Instrumented module %s, code size: %zd\n",
+  //       module->module_name, module->code_size);
 
   OnModuleInstrumented(module);
 }

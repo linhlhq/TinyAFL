@@ -108,6 +108,10 @@ double period_pilot_tmp = 5000.0;
 int key_lv = 0;
 /*end setup variable for afl-mopt*/
 
+/*fuzz only header*/
+bool header_only;
+u64 size_of_header;
+
 /*coverage of TinyInst*/
 Coverage coverage;
 LiteCov *instrumentation;
@@ -151,7 +155,6 @@ enum {
 	/* 05 */ QUAD,    /* Quadratic schedule               */
 	/* 06 */ RARE,    /* Rare edges                       */
 	/* 07 */ MMOPT,   /* Modified MOPT schedule           */
-	/* 08 */ SEEK,    /* EXPLORE that ignores timings     */
 
 	POWER_SCHEDULES_NUM
 };
@@ -356,7 +359,13 @@ enum {
 };
 
 static u64 next_p2(u64 val);
+#ifdef _WIN64
+inline void classify_counts(u64* mem);
+#else
 inline void classify_counts(u32* mem);
+#endif // _WIN64
+
+
 
 /* MOpt */
 
@@ -418,7 +427,13 @@ void cook_coverage() {
 	Coverage newcoverage;
 	instrumentation->GetCoverage(newcoverage, true);
 	move_coverage(trace_bits, newcoverage);
+
+#ifdef _WIN64
+	classify_counts((u64*)trace_bits);
+#else
 	classify_counts((u32*)trace_bits);
+#endif // _WIN64
+
 }
 
 // run a single iteration over the target process
@@ -1058,11 +1073,18 @@ it needs to be fast. We do this in 32-bit and 64-bit flavors. */
 
 inline u8 has_new_bits(u8* virgin_map) {
 
+#ifdef _WIN64
+	u64* current = (u64*)trace_bits;
+	u64* virgin = (u64*)virgin_map;
+
+	u32  i = (MAP_SIZE >> 3);
+#else
 	u32* current = (u32*)trace_bits;
 	u32* virgin = (u32*)virgin_map;
 
 	u32  i = (MAP_SIZE >> 2);
-
+#endif
+	
 	u8   ret = 0;
 
 	while (i--) {
@@ -1080,10 +1102,17 @@ inline u8 has_new_bits(u8* virgin_map) {
 
 				/* Looks like we have not found any new bytes yet; see if any non-zero
 				bytes in current[] are pristine in virgin[]. */
-
+#ifdef _WIN64
+				if ((cur[0] && vir[0] == 0xff) || (cur[1] && vir[1] == 0xff) ||
+					(cur[2] && vir[2] == 0xff) || (cur[3] && vir[3] == 0xff) ||
+					(cur[4] && vir[4] == 0xff) || (cur[5] && vir[5] == 0xff) ||
+					(cur[6] && vir[6] == 0xff) || (cur[7] && vir[7] == 0xff)) ret = 2;
+				else ret = 1;
+#else
 				if ((cur[0] && (vir[0] & 0xff) == 0xff) || (cur[1] && (vir[1] & 0xff) == 0xff) ||
 					(cur[2] && (vir[2] & 0xff) == 0xff) || (cur[3] && (vir[3] & 0xff) == 0xff)) ret = 2;
 				else ret = 1;
+#endif
 
 			}
 
@@ -1214,8 +1243,39 @@ uint8_t simplify_lookup[256] = {
 	/* +128 */ AREP128(128)
 };
 
+#ifdef _WIN64
 
+void simplify_trace(u64* mem) {
 
+	u32 i = MAP_SIZE >> 3;
+
+	while (i--) {
+
+		/* Optimize for sparse bitmaps. */
+
+		if (unlikely(*mem)) {
+
+			u8* mem8 = (u8*)mem;
+
+			mem8[0] = simplify_lookup[mem8[0]];
+			mem8[1] = simplify_lookup[mem8[1]];
+			mem8[2] = simplify_lookup[mem8[2]];
+			mem8[3] = simplify_lookup[mem8[3]];
+			mem8[4] = simplify_lookup[mem8[4]];
+			mem8[5] = simplify_lookup[mem8[5]];
+			mem8[6] = simplify_lookup[mem8[6]];
+			mem8[7] = simplify_lookup[mem8[7]];
+
+		}
+		else *mem = 0x0101010101010101ULL;
+
+		mem++;
+
+	}
+
+}
+
+#else
 
 void simplify_trace(u32* mem) {
 
@@ -1241,6 +1301,11 @@ void simplify_trace(u32* mem) {
 	}
 
 }
+#endif // _WIN64
+
+
+
+
 
 /* Destructively classify execution counts in a trace. This is used as a
 preprocessing step for any newly acquired traces. Called on every exec,
@@ -1272,6 +1337,35 @@ void init_count_class16(void) {
 
 }
 
+#ifdef _WIN64
+
+inline void classify_counts(u64* mem) {
+
+	u32 i = MAP_SIZE >> 3;
+
+	while (i--) {
+
+		/* Optimize for sparse bitmaps. */
+
+		if (unlikely(*mem)) {
+
+			u16* mem16 = (u16*)mem;
+
+			mem16[0] = count_class_lookup16[mem16[0]];
+			mem16[1] = count_class_lookup16[mem16[1]];
+			mem16[2] = count_class_lookup16[mem16[2]];
+			mem16[3] = count_class_lookup16[mem16[3]];
+
+		}
+
+		mem++;
+
+	}
+
+}
+
+#else
+
 inline void classify_counts(u32* mem) {
 
 	u32 i = MAP_SIZE >> 2;
@@ -1294,6 +1388,9 @@ inline void classify_counts(u32* mem) {
 	}
 
 }
+
+#endif // _WIN64
+
 /* Get rid of shared memory (atexit handler). */
 
 void remove_shm(void) {
@@ -2866,7 +2963,11 @@ u8 save_if_interesting(int argc, char** argv, void* mem, u32 len, u8 fault) {
 
 			if (!dumb_mode) {
 
+#ifdef _WIN64
+				simplify_trace((u64*)trace_bits);
+#else
 				simplify_trace((u32*)trace_bits);
+#endif // _WIN64
 
 				if (!has_new_bits(virgin_hang)) return keeping;
 
@@ -2891,7 +2992,11 @@ u8 save_if_interesting(int argc, char** argv, void* mem, u32 len, u8 fault) {
 
 			if (!dumb_mode) {
 
+#ifdef _WIN64
+				simplify_trace((u64*)trace_bits);
+#else
 				simplify_trace((u32*)trace_bits);
+#endif // _WIN64
 
 				if (!has_new_bits(virgin_crash)) return keeping;
 
@@ -4344,9 +4449,6 @@ u32 calculate_score(struct queue_entry* q) {
 	case EXPLORE:
 		break;
 
-	case SEEK:
-		break;
-
 	case EXPLOIT:
 		factor = MAX_FACTOR;
 		break;
@@ -4647,6 +4749,7 @@ u8 fuzz_one_original(int argc, char** argv) {
 
 	u8  a_collect[MAX_AUTO_EXTRA];
 	u32 a_len = 0;
+	u32 count = 0;
 
 #ifdef IGNORE_FINDS
 
@@ -4802,8 +4905,20 @@ u8 fuzz_one_original(int argc, char** argv) {
 	/* Single walking bit. */
 
 	stage_short = "flip1";
-	stage_max = len << 3;
 	stage_name = "bitflip 1/1";
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header << 3;
+		}
+		else {
+			stage_max = len << 3;
+		}
+	}
+	else {
+		stage_max = len << 3;
+
+	}
 
 	stage_val_type = STAGE_VAL_NONE;
 
@@ -4900,7 +5015,18 @@ u8 fuzz_one_original(int argc, char** argv) {
 
 	stage_name = "bitflip 2/1";
 	stage_short = "flip2";
-	stage_max = (len << 3) - 1;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = (size_of_header << 3) - 1;
+		}
+		else {
+			stage_max = (len << 3) - 1;
+		}
+	}
+	else {
+		stage_max = (len << 3) - 1;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
@@ -4927,7 +5053,18 @@ u8 fuzz_one_original(int argc, char** argv) {
 
 	stage_name = "bitflip 4/1";
 	stage_short = "flip4";
-	stage_max = (len << 3) - 3;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = (size_of_header << 3) - 3;
+		}
+		else {
+			stage_max = (len << 3) - 3;
+		}
+	}
+	else {
+		stage_max = (len << 3) - 3;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
@@ -4982,7 +5119,18 @@ u8 fuzz_one_original(int argc, char** argv) {
 
 	stage_name = "bitflip 8/8";
 	stage_short = "flip8";
-	stage_max = len;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header;
+		}
+		else {
+			stage_max = len;
+		}
+	}
+	else {
+		stage_max = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
@@ -5055,11 +5203,25 @@ u8 fuzz_one_original(int argc, char** argv) {
 	stage_name = "bitflip 16/8";
 	stage_short = "flip16";
 	stage_cur = 0;
-	stage_max = len - 1;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header - 1;
+			count = size_of_header;
+		}
+		else {
+			stage_max = len - 1;
+			count = len;
+		}
+	}
+	else {
+		stage_max = len - 1;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 1; i++) {
+	for (i = 0; i < count - 1; i++) {
 
 		/* Let's consult the effector map... */
 
@@ -5092,11 +5254,25 @@ u8 fuzz_one_original(int argc, char** argv) {
 	stage_name = "bitflip 32/8";
 	stage_short = "flip32";
 	stage_cur = 0;
-	stage_max = len - 3;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header - 3;
+			count = size_of_header;
+		}
+		else {
+			stage_max = len - 3;
+			count = len;
+		}
+	}
+	else {
+		stage_max = len - 3;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 3; i++) {
+	for (i = 0; i < count - 3; i++) {
 
 		/* Let's consult the effector map... */
 		if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)] &&
@@ -5131,13 +5307,27 @@ skip_bitflip:
 	stage_name = "arith 8/8";
 	stage_short = "arith8";
 	stage_cur = 0;
-	stage_max = 2 * len * ARITH_MAX;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 2 * size_of_header * ARITH_MAX;
+			count = size_of_header;
+		}
+		else {
+			stage_max = 2 * len * ARITH_MAX;
+			count = len;
+		}
+	}
+	else {
+		stage_max = 2 * len * ARITH_MAX;
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_LE;
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u8 orig = out_buf[i];
 
@@ -5199,11 +5389,25 @@ skip_bitflip:
 	stage_name = "arith 16/8";
 	stage_short = "arith16";
 	stage_cur = 0;
-	stage_max = 4 * (len - 1) * ARITH_MAX;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 4 * (size_of_header - 1) * ARITH_MAX;
+			count = size_of_header;
+		}
+		else {
+			stage_max = 4 * (len - 1) * ARITH_MAX;
+			count = len;
+		}
+	}
+	else {
+		stage_max = 4 * (len - 1) * ARITH_MAX;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 1; i++) {
+	for (i = 0; i < count - 1; i++) {
 
 		u16 orig = *(u16*)(out_buf + i);
 
@@ -5297,11 +5501,25 @@ skip_bitflip:
 	stage_name = "arith 32/8";
 	stage_short = "arith32";
 	stage_cur = 0;
-	stage_max = 4 * (len - 3) * ARITH_MAX;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 4 * (size_of_header - 3) * ARITH_MAX;
+			count = size_of_header;
+		}
+		else {
+			stage_max = 4 * (len - 3) * ARITH_MAX;
+			count = len;
+		}
+	}
+	else {
+		stage_max = 4 * (len - 3) * ARITH_MAX;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 3; i++) {
+	for (i = 0; i < count - 3; i++) {
 
 		u32 orig = *(u32*)(out_buf + i);
 
@@ -5394,7 +5612,21 @@ skip_arith:
 	stage_name = "interest 8/8";
 	stage_short = "int8";
 	stage_cur = 0;
-	stage_max = len * sizeof(interesting_8);
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header * sizeof(interesting_8);
+			count = size_of_header;
+		}
+		else {
+			stage_max = len * sizeof(interesting_8);
+			count = len;
+		}
+	}
+	else {
+		stage_max = len * sizeof(interesting_8);
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_LE;
 
@@ -5402,7 +5634,7 @@ skip_arith:
 
 	/* Setting 8-bit integers. */
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u8 orig = out_buf[i];
 
@@ -5449,11 +5681,26 @@ skip_arith:
 	stage_name = "interest 16/8";
 	stage_short = "int16";
 	stage_cur = 0;
-	stage_max = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 2 * (size_of_header - 1) * (sizeof(interesting_16) >> 1);
+			count = size_of_header;
+		}
+		else {
+			stage_max = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+			count = len;
+		}
+	}
+	else {
+		stage_max = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+		count = len;
+	}
+
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 1; i++) {
+	for (i = 0; i < count - 1; i++) {
 
 		u16 orig = *(u16*)(out_buf + i);
 
@@ -5519,11 +5766,25 @@ skip_arith:
 	stage_name = "interest 32/8";
 	stage_short = "int32";
 	stage_cur = 0;
-	stage_max = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 2 * (size_of_header - 3) * (sizeof(interesting_32) >> 2);
+			count = size_of_header;
+		}
+		else {
+			stage_max = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
+			count = len;
+		}
+	}
+	else {
+		stage_max = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 3; i++) {
+	for (i = 0; i < count - 3; i++) {
 
 		u32 orig = *(u32*)(out_buf + i);
 
@@ -5596,13 +5857,27 @@ skip_interest:
 	stage_name = "user extras (over)";
 	stage_short = "ext_UO";
 	stage_cur = 0;
-	stage_max = extras_cnt * len;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = extras_cnt * size_of_header;
+			count = size_of_header;
+		}
+		else {
+			stage_max = extras_cnt * len;
+			count = len;
+		}
+	}
+	else {
+		stage_max = extras_cnt * len;
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_NONE;
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u32 last_len = 0;
 
@@ -5654,13 +5929,27 @@ skip_interest:
 	stage_name = "user extras (insert)";
 	stage_short = "ext_UI";
 	stage_cur = 0;
-	stage_max = extras_cnt * len;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = extras_cnt * size_of_header;
+			count = size_of_header;
+		}
+		else {
+			stage_max = extras_cnt * len;
+			count = len;
+		}
+	}
+	else {
+		stage_max = extras_cnt * len;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
 	ex_tmp = (u8*)ck_alloc(len + MAX_DICT_FILE);
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		stage_cur_byte = i;
 
@@ -5705,13 +5994,28 @@ skip_user_extras:
 	stage_name = "auto extras (over)";
 	stage_short = "ext_AO";
 	stage_cur = 0;
-	stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * size_of_header;
+			count = size_of_header;
+		}
+		else {
+			stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
+			count = len;
+		}
+	}
+	else {
+		stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
+		count = len;
+	}
+
+	
 	stage_val_type = STAGE_VAL_NONE;
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u32 last_len = 0;
 
@@ -6346,6 +6650,7 @@ u8 pilot_fuzzing(int argc, char** argv) {
 
 	u8  a_collect[MAX_AUTO_EXTRA];
 	u32 a_len = 0;
+	u32 count = 0;
 
 #ifdef IGNORE_FINDS
 
@@ -6476,8 +6781,6 @@ u8 pilot_fuzzing(int argc, char** argv) {
 
 	orig_perf = perf_score = calculate_score(queue_cur);
 
-	if (perf_score == 0) goto abandon_entry;
-
 	/* Go to pacemker fuzzing if MOpt is doing well */
 
 	cur_ms_lv = get_cur_time();
@@ -6521,8 +6824,20 @@ u8 pilot_fuzzing(int argc, char** argv) {
 	/* Single walking bit. */
 
 	stage_short = "flip1";
-	stage_max = len << 3;
 	stage_name = "bitflip 1/1";
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header << 3;
+		}
+		else {
+			stage_max = len << 3;
+		}
+	}
+	else {
+		stage_max = len << 3;
+
+	}
 
 	stage_val_type = STAGE_VAL_NONE;
 
@@ -6619,7 +6934,18 @@ u8 pilot_fuzzing(int argc, char** argv) {
 
 	stage_name = "bitflip 2/1";
 	stage_short = "flip2";
-	stage_max = (len << 3) - 1;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = (size_of_header << 3) - 1;
+		}
+		else {
+			stage_max = (len << 3) - 1;
+		}
+	}
+	else {
+		stage_max = (len << 3) - 1;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
@@ -6646,7 +6972,18 @@ u8 pilot_fuzzing(int argc, char** argv) {
 
 	stage_name = "bitflip 4/1";
 	stage_short = "flip4";
-	stage_max = (len << 3) - 3;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = (size_of_header << 3) - 3;
+		}
+		else {
+			stage_max = (len << 3) - 3;
+		}
+	}
+	else {
+		stage_max = (len << 3) - 3;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
@@ -6701,7 +7038,19 @@ u8 pilot_fuzzing(int argc, char** argv) {
 
 	stage_name = "bitflip 8/8";
 	stage_short = "flip8";
-	stage_max = len;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header;
+		}
+		else {
+			stage_max = len;
+		}
+	}
+	else {
+		stage_max = len;
+	}
+
 
 	orig_hit_cnt = new_hit_cnt;
 
@@ -6773,11 +7122,25 @@ u8 pilot_fuzzing(int argc, char** argv) {
 	stage_name = "bitflip 16/8";
 	stage_short = "flip16";
 	stage_cur = 0;
-	stage_max = len - 1;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header - 1;
+			count = size_of_header;
+		}
+		else {
+			stage_max = len - 1;
+			count = len;
+		}
+	}
+	else {
+		stage_max = len - 1;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 1; i++) {
+	for (i = 0; i < count - 1; i++) {
 
 		/* Let's consult the effector map... */
 
@@ -6810,11 +7173,25 @@ u8 pilot_fuzzing(int argc, char** argv) {
 	stage_name = "bitflip 32/8";
 	stage_short = "flip32";
 	stage_cur = 0;
-	stage_max = len - 3;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header - 3;
+			count = size_of_header;
+		}
+		else {
+			stage_max = len - 3;
+			count = len;
+		}
+	}
+	else {
+		stage_max = len - 3;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 3; i++) {
+	for (i = 0; i < count - 3; i++) {
 
 		/* Let's consult the effector map... */
 		if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)] &&
@@ -6850,13 +7227,27 @@ skip_bitflip:
 	stage_name = "arith 8/8";
 	stage_short = "arith8";
 	stage_cur = 0;
-	stage_max = 2 * len * ARITH_MAX;
+	
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 2 * size_of_header * ARITH_MAX;
+			count = size_of_header;
+		}
+		else {
+			stage_max = 2 * len * ARITH_MAX;
+			count = len;
+		}
+	}
+	else {
+		stage_max = 2 * len * ARITH_MAX;
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_LE;
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u8 orig = out_buf[i];
 
@@ -6918,11 +7309,25 @@ skip_bitflip:
 	stage_name = "arith 16/8";
 	stage_short = "arith16";
 	stage_cur = 0;
-	stage_max = 4 * (len - 1) * ARITH_MAX;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 4 * (size_of_header - 1) * ARITH_MAX;
+			count = size_of_header;
+		}
+		else {
+			stage_max = 4 * (len - 1) * ARITH_MAX;
+			count = len;
+		}
+	}
+	else {
+		stage_max = 4 * (len - 1) * ARITH_MAX;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 1; i++) {
+	for (i = 0; i < count - 1; i++) {
 
 		u16 orig = *(u16*)(out_buf + i);
 
@@ -7016,11 +7421,25 @@ skip_bitflip:
 	stage_name = "arith 32/8";
 	stage_short = "arith32";
 	stage_cur = 0;
-	stage_max = 4 * (len - 3) * ARITH_MAX;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 4 * (size_of_header - 3) * ARITH_MAX;
+			count = size_of_header;
+		}
+		else {
+			stage_max = 4 * (len - 3) * ARITH_MAX;
+			count = len;
+		}
+	}
+	else {
+		stage_max = 4 * (len - 3) * ARITH_MAX;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 3; i++) {
+	for (i = 0; i < count - 3; i++) {
 
 		u32 orig = *(u32*)(out_buf + i);
 
@@ -7114,7 +7533,21 @@ skip_arith:
 	stage_name = "interest 8/8";
 	stage_short = "int8";
 	stage_cur = 0;
-	stage_max = len * sizeof(interesting_8);
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header * sizeof(interesting_8);
+			count = size_of_header;
+		}
+		else {
+			stage_max = len * sizeof(interesting_8);
+			count = len;
+		}
+	}
+	else {
+		stage_max = len * sizeof(interesting_8);
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_LE;
 
@@ -7122,7 +7555,7 @@ skip_arith:
 
 	/* Setting 8-bit integers. */
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u8 orig = out_buf[i];
 
@@ -7169,11 +7602,25 @@ skip_arith:
 	stage_name = "interest 16/8";
 	stage_short = "int16";
 	stage_cur = 0;
-	stage_max = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 2 * (size_of_header - 1) * (sizeof(interesting_16) >> 1);
+			count = size_of_header;
+		}
+		else {
+			stage_max = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+			count = len;
+		}
+	}
+	else {
+		stage_max = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 1; i++) {
+	for (i = 0; i < count - 1; i++) {
 
 		u16 orig = *(u16*)(out_buf + i);
 
@@ -7239,11 +7686,25 @@ skip_arith:
 	stage_name = "interest 32/8";
 	stage_short = "int32";
 	stage_cur = 0;
-	stage_max = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 2 * (size_of_header - 3) * (sizeof(interesting_32) >> 2);
+			count = size_of_header;
+		}
+		else {
+			stage_max = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
+			count = len;
+		}
+	}
+	else {
+		stage_max = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 3; i++) {
+	for (i = 0; i < count - 3; i++) {
 
 		u32 orig = *(u32*)(out_buf + i);
 
@@ -7316,13 +7777,27 @@ skip_interest:
 	stage_name = "user extras (over)";
 	stage_short = "ext_UO";
 	stage_cur = 0;
-	stage_max = extras_cnt * len;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = extras_cnt * size_of_header;
+			count = size_of_header;
+		}
+		else {
+			stage_max = extras_cnt * len;
+			count = len;
+		}
+	}
+	else {
+		stage_max = extras_cnt * len;
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_NONE;
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u32 last_len = 0;
 
@@ -7374,13 +7849,27 @@ skip_interest:
 	stage_name = "user extras (insert)";
 	stage_short = "ext_UI";
 	stage_cur = 0;
-	stage_max = extras_cnt * len;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = extras_cnt * size_of_header;
+			count = size_of_header;
+		}
+		else {
+			stage_max = extras_cnt * len;
+			count = len;
+		}
+	}
+	else {
+		stage_max = extras_cnt * len;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
 	ex_tmp = (u8*)ck_alloc(len + MAX_DICT_FILE);
 
-	for (i = 0; i <= len; i++) {
+	for (i = 0; i <= count; i++) {
 
 		stage_cur_byte = i;
 
@@ -7425,13 +7914,27 @@ skip_user_extras:
 	stage_name = "auto extras (over)";
 	stage_short = "ext_AO";
 	stage_cur = 0;
-	stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * size_of_header;
+			count = size_of_header;
+		}
+		else {
+			stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
+			count = len;
+		}
+	}
+	else {
+		stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_NONE;
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u32 last_len = 0;
 
@@ -8208,6 +8711,7 @@ u8 core_fuzzing(int argc, char** argv) {
 
 	u8  a_collect[MAX_AUTO_EXTRA];
 	u32 a_len = 0;
+	u32 count = 0;
 
 #ifdef IGNORE_FINDS
 
@@ -8378,8 +8882,20 @@ u8 core_fuzzing(int argc, char** argv) {
 	 /* Single walking bit. */
 
 	stage_short = "flip1";
-	stage_max = len << 3;
 	stage_name = "bitflip 1/1";
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header << 3;
+		}
+		else {
+			stage_max = len << 3;
+		}
+	}
+	else {
+		stage_max = len << 3;
+
+	}
 
 	stage_val_type = STAGE_VAL_NONE;
 
@@ -8478,7 +8994,18 @@ u8 core_fuzzing(int argc, char** argv) {
 
 	stage_name = "bitflip 2/1";
 	stage_short = "flip2";
-	stage_max = (len << 3) - 1;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = (size_of_header << 3) - 1;
+		}
+		else {
+			stage_max = (len << 3) - 1;
+		}
+	}
+	else {
+		stage_max = (len << 3) - 1;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
@@ -8506,8 +9033,18 @@ u8 core_fuzzing(int argc, char** argv) {
 
 	stage_name = "bitflip 4/1";
 	stage_short = "flip4";
-	stage_max = (len << 3) - 3;
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = (size_of_header << 3) - 3;
+		}
+		else {
+			stage_max = (len << 3) - 3;
+		}
+	}
+	else {
+		stage_max = (len << 3) - 3;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
@@ -8563,8 +9100,18 @@ u8 core_fuzzing(int argc, char** argv) {
 
 	stage_name = "bitflip 8/8";
 	stage_short = "flip8";
-	stage_max = len;
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header;
+		}
+		else {
+			stage_max = len;
+		}
+	}
+	else {
+		stage_max = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
@@ -8638,12 +9185,25 @@ u8 core_fuzzing(int argc, char** argv) {
 	stage_name = "bitflip 16/8";
 	stage_short = "flip16";
 	stage_cur = 0;
-	stage_max = len - 1;
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header - 1;
+			count = size_of_header;
+		}
+		else {
+			stage_max = len - 1;
+			count = len;
+		}
+	}
+	else {
+		stage_max = len - 1;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 1; i++) {
+	for (i = 0; i < count - 1; i++) {
 
 		/* Let's consult the effector map... */
 
@@ -8678,12 +9238,25 @@ u8 core_fuzzing(int argc, char** argv) {
 	stage_name = "bitflip 32/8";
 	stage_short = "flip32";
 	stage_cur = 0;
-	stage_max = len - 3;
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header - 3;
+			count = size_of_header;
+		}
+		else {
+			stage_max = len - 3;
+			count = len;
+		}
+	}
+	else {
+		stage_max = len - 3;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 3; i++) {
+	for (i = 0; i < count - 3; i++) {
 
 		/* Let's consult the effector map... */
 		if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)] &&
@@ -8722,14 +9295,27 @@ skip_bitflip:
 	stage_name = "arith 8/8";
 	stage_short = "arith8";
 	stage_cur = 0;
-	stage_max = 2 * len * ARITH_MAX;
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 2 * size_of_header * ARITH_MAX;
+			count = size_of_header;
+		}
+		else {
+			stage_max = 2 * len * ARITH_MAX;
+			count = len;
+		}
+	}
+	else {
+		stage_max = 2 * len * ARITH_MAX;
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_LE;
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u8 orig = out_buf[i];
 
@@ -8794,12 +9380,25 @@ skip_bitflip:
 	stage_name = "arith 16/8";
 	stage_short = "arith16";
 	stage_cur = 0;
-	stage_max = 4 * (len - 1) * ARITH_MAX;
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 4 * (size_of_header - 1) * ARITH_MAX;
+			count = size_of_header;
+		}
+		else {
+			stage_max = 4 * (len - 1) * ARITH_MAX;
+			count = len;
+		}
+	}
+	else {
+		stage_max = 4 * (len - 1) * ARITH_MAX;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 1; i++) {
+	for (i = 0; i < count - 1; i++) {
 
 		u16 orig = *(u16*)(out_buf + i);
 
@@ -8895,11 +9494,25 @@ skip_bitflip:
 	stage_name = "arith 32/8";
 	stage_short = "arith32";
 	stage_cur = 0;
-	stage_max = 4 * (len - 3) * ARITH_MAX;
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 4 * (size_of_header - 3) * ARITH_MAX;
+			count = size_of_header;
+		}
+		else {
+			stage_max = 4 * (len - 3) * ARITH_MAX;
+			count = len;
+		}
+	}
+	else {
+		stage_max = 4 * (len - 3) * ARITH_MAX;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 3; i++) {
+	for (i = 0; i < count - 3; i++) {
 
 		u32 orig = *(u32*)(out_buf + i);
 
@@ -8995,9 +9608,21 @@ skip_arith:
 	stage_name = "interest 8/8";
 	stage_short = "int8";
 	stage_cur = 0;
-	stage_max = len * sizeof(interesting_8);
 
-
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = size_of_header * sizeof(interesting_8);
+			count = size_of_header;
+		}
+		else {
+			stage_max = len * sizeof(interesting_8);
+			count = len;
+		}
+	}
+	else {
+		stage_max = len * sizeof(interesting_8);
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_LE;
 
@@ -9005,7 +9630,7 @@ skip_arith:
 
 	/* Setting 8-bit integers. */
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u8 orig = out_buf[i];
 
@@ -9054,12 +9679,26 @@ skip_arith:
 	stage_name = "interest 16/8";
 	stage_short = "int16";
 	stage_cur = 0;
-	stage_max = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 2 * (size_of_header - 1) * (sizeof(interesting_16) >> 1);
+			count = size_of_header;
+		}
+		else {
+			stage_max = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+			count = len;
+		}
+	}
+	else {
+		stage_max = 2 * (len - 1) * (sizeof(interesting_16) >> 1);
+		count = len;
+	}
 
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 1; i++) {
+	for (i = 0; i < count - 1; i++) {
 
 		u16 orig = *(u16*)(out_buf + i);
 
@@ -9128,12 +9767,25 @@ skip_arith:
 	stage_name = "interest 32/8";
 	stage_short = "int32";
 	stage_cur = 0;
-	stage_max = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = 2 * (size_of_header - 3) * (sizeof(interesting_32) >> 2);
+			count = size_of_header;
+		}
+		else {
+			stage_max = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
+			count = len;
+		}
+	}
+	else {
+		stage_max = 2 * (len - 3) * (sizeof(interesting_32) >> 2);
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len - 3; i++) {
+	for (i = 0; i < count - 3; i++) {
 
 		u32 orig = *(u32*)(out_buf + i);
 
@@ -9208,14 +9860,27 @@ skip_interest:
 	stage_name = "user extras (over)";
 	stage_short = "ext_UO";
 	stage_cur = 0;
-	stage_max = extras_cnt * len;
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = extras_cnt * size_of_header;
+			count = size_of_header;
+		}
+		else {
+			stage_max = extras_cnt * len;
+			count = len;
+		}
+	}
+	else {
+		stage_max = extras_cnt * len;
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_NONE;
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u32 last_len = 0;
 
@@ -9267,16 +9932,27 @@ skip_interest:
 	stage_name = "user extras (insert)";
 	stage_short = "ext_UI";
 	stage_cur = 0;
-	stage_max = extras_cnt * len;
 
-
-
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = extras_cnt * size_of_header;
+			count = size_of_header;
+		}
+		else {
+			stage_max = extras_cnt * len;
+			count = len;
+		}
+	}
+	else {
+		stage_max = extras_cnt * len;
+		count = len;
+	}
 
 	orig_hit_cnt = new_hit_cnt;
 
 	ex_tmp = (u8*)ck_alloc(len + MAX_DICT_FILE);
 
-	for (i = 0; i <= len; i++) {
+	for (i = 0; i <= count; i++) {
 
 		stage_cur_byte = i;
 
@@ -9321,14 +9997,27 @@ skip_user_extras:
 	stage_name = "auto extras (over)";
 	stage_short = "ext_AO";
 	stage_cur = 0;
-	stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
 
+	if (header_only) {
+		if (len > size_of_header) {
+			stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * size_of_header;
+			count = size_of_header;
+		}
+		else {
+			stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
+			count = len;
+		}
+	}
+	else {
+		stage_max = MIN(a_extras_cnt, USE_AUTO_EXTRAS) * len;
+		count = len;
+	}
 
 	stage_val_type = STAGE_VAL_NONE;
 
 	orig_hit_cnt = new_hit_cnt;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < count; i++) {
 
 		u32 last_len = 0;
 
@@ -9380,8 +10069,6 @@ skip_extras:
 
 havoc_stage:
 pacemaker_fuzzing:
-
-
 
 	stage_cur_byte = -1;
 
@@ -10304,7 +10991,6 @@ void fix_up_banner(u8* name) {
 		case QUAD:    string_schedule = "quad"; break;
 		case RARE:    string_schedule = "rare"; break;
 		case MMOPT:   string_schedule = "mmopt"; break;
-		case SEEK:    string_schedule = "seek"; break;
 		default: FATAL("Unkown power schedule"); break;
 		}
 		sprintf(use_banner, "%s (%s)", type, string_schedule);
@@ -10328,7 +11014,7 @@ void usage(u8* argv0) {
 		
 		"  -p schedule   - power schedules recompute a seed's performance score.\n"
 		"                  <explore(default), fast, coe, lin, quad, exploit, "
-		"mmopt, rare, seek>\n"
+		"mmopt, rare>\n"
 		"  -f file       - location read by the fuzzed program (stdin)\n"
 		"  -t msec       - timeout for each run\n"
 		"  -Q            - use binary-only instrumentation (QEMU mode)\n\n"
@@ -10690,11 +11376,6 @@ int main(int argc, char **argv){
 			schedule = MMOPT;
 
 		}
-		else if (!stricmp(optarg, "seek")) {
-
-			schedule = SEEK;
-
-		}
 		else {
 
 			FATAL("Unknown -p power schedule");
@@ -10713,6 +11394,10 @@ int main(int argc, char **argv){
 	else {
 		force_deterministic = 1;
 	}
+
+	/*using fuzz only header file*/
+	header_only = GetBinaryOption("-header_only", argc, argv, false);
+	size_of_header = GetIntOption("-size_of_header", argc, argv, 0x200);
 
 	/* input dir */
 	in_dir = GetOption("-i", argc, argv);
@@ -10890,6 +11575,10 @@ int main(int argc, char **argv){
 	if (!strcmp(in_dir, out_dir))
 		FATAL("Input and output directories can't be the same");
 
+	if (header_only) {
+		OKF("Using fuzz header file with size %08x", size_of_header);
+	}
+
 	switch (schedule) {
 	case EXPLORE: OKF("Using exploration-based constant power schedule (EXPLORE)"); break;
 	case EXPLOIT: OKF("Using exploitation-based constant power schedule (EXPLOIT)"); break;
@@ -10899,7 +11588,6 @@ int main(int argc, char **argv){
 	case QUAD:    OKF("Using quadratic power schedule (QUAD)"); break;
 	case RARE:	  OKF("Using rare edge focus power schedule (RARE)"); break;
 	case MMOPT:	  OKF("Using modified MOpt power schedule (MMOPT)"); break;
-	case SEEK:	  OKF("Using seek power schedule (SEEK)"); break;
 	default: FATAL("Unkown power schedule"); break;
 	}
 	
