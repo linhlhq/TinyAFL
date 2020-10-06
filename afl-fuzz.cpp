@@ -11019,7 +11019,7 @@ void usage(u8* argv0) {
 		"  -t msec       - timeout for each run\n"
 		"  -Q            - use binary-only instrumentation (QEMU mode)\n\n"
 		
-		"Mutator settings:\n"
+		"Mutator settings:\n\n"
 		"  -L minutes    - use MOpt(imize) mode and set the time limit for "
 		"entering the\n"
 		"                  pacemaker mode (minutes of no new paths). 0 = "
@@ -11033,9 +11033,11 @@ void usage(u8* argv0) {
 		"Other stuff:\n\n"
 
 		"  -M / -S id    - distributed mode (see parallel_fuzzing.txt)\n"
-		"  -C            - crash exploration mode (the peruvian rabbit thing)\n\n"
+		"  -C            - crash exploration mode (the peruvian rabbit thing)\n"
 		"  -e ext        - file extension for the fuzz test input file (if "
-		"needed)\n\n",
+		"needed)\n"
+		"  -header_only  - mutate only header of testcase (if needed)\n"
+		"  -size_of_header  - size of header will mutate when use option -header_only (default: 0x200)\n\n"
 
 		"tiny-afl settings:\n\n"
 
