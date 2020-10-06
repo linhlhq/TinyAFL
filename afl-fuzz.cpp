@@ -11045,7 +11045,7 @@ void usage(u8* argv0) {
 
 		"For additional tips, please consult %s\\README.\n\n",
 
-		argv0, EXEC_TIMEOUT, doc_path);
+		argv0, doc_path);
 
 	exit(1);
 
