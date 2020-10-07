@@ -80,4 +80,4 @@ Execution control settings:
   -t msec       - timeout for each run (1000 ms)
 ```
 ## Special Thanks
-Special thanks to Ivan Fratric "[ifsecure](https://twitter.com/ifsecure)" security researcher of Google Project Zero has published a great tool for coverage-guided
+Special thanks to Ivan Fratric "[ifsecure](https://twitter.com/ifsecure)" and [Alexandru-Vlad Niculae](https://twitter.com/_aniculae) security researcher of Google Project Zero has published a great tool for coverage-guided
