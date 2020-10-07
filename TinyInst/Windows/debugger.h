@@ -44,6 +44,25 @@ public:
   bool IsTargetAlive() { return (child_handle != NULL); };
   bool IsTargetFunctionDefined() { return target_function_defined; };
   
+  enum ExceptionType {
+    BREAKPOINT,
+    ACCESS_VIOLATION,
+    ILLEGAL_INSTRUCTION,
+    OTHER
+  };
+
+  struct Exception {
+    ExceptionType type;
+    void *ip;
+    bool maybe_write_violation;
+    bool maybe_execute_violation;
+    void *access_address;
+  };
+
+  Exception GetLastException() {
+    return last_exception;
+  }
+
 protected:
 
   enum MemoryProtection {
@@ -71,21 +90,6 @@ protected:
     R14,
     R15,
     RIP
-  };
-
-  enum ExceptionType {
-    BREAKPOINT,
-    ACCESS_VIOLATION,
-    ILLEGAL_INSTRUCTION,
-    OTHER
-  };
-
-  struct Exception {
-    ExceptionType type;
-    void *ip;
-    bool maybe_write_violation;
-    bool maybe_execute_violation;
-    void *access_address;
   };
 
   struct AddressRange {
@@ -138,6 +142,8 @@ protected:
   size_t GetRegister(Register r);
   void SetRegister(Register r, size_t value);
 
+  void *GetTargetMethodAddress() { return target_address;  }
+
 private:
   struct Breakpoint {
     void *address;
@@ -162,9 +168,13 @@ private:
   DWORD GetImageSize(void *base_address);
   DWORD GetProcOffset(char *data, char *name);
   void *RemoteAllocateBefore(uint64_t min_address,
-    uint64_t max_address,
-    size_t size,
-    MemoryProtection protection);
+                             uint64_t max_address,
+                             size_t size,
+                             MemoryProtection protection);
+  void *RemoteAllocateAfter(uint64_t min_address,
+                            uint64_t max_address,
+                            size_t size,
+                            MemoryProtection protection);
 
 protected:
 
@@ -217,6 +227,7 @@ private:
   DWORD thread_id;
   CONTEXT lcContext;
   bool have_thread_context;
+  size_t allocation_granularity;
 };
 
 #endif // DEBUGGER_H

@@ -19,59 +19,48 @@ based on the initially observed behavior).
 
 */
 
-#define _CRT_SECURE_NO_WARNINGS
-#define _CRT_RAND_S
 #define AFL_MAIN
-
-#include <windows.h>
-#include <stdarg.h>
-#include <io.h>
-#include <direct.h>
-#include <pdh.h>
-#include <tlhelp32.h>
-#pragma comment(lib, "pdh.lib")
-
-#include "TinyInst/common.h"
-#include "TinyInst/litecov.h"
-
 
 #include "config.h"
 #include "types.h"
 #include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
+#include "TinyInst/common.h"
+#include "TinyInst/litecov.h"
 
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <errno.h>
 #include <signal.h>
+#include <dirent.h>
 #include <fcntl.h>
 
+#include <sys/wait.h>
+#include <sys/time.h>
+#include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/resource.h>
 
 Coverage coverage;
 LiteCov *instrumentation;
 int num_iterations;
 int cur_iteration;
 bool persist;
-
-static HANDLE child_handle, hnul;
+int optind;
+char *optarg;
 char *target_module;
 
-PDH_HQUERY cpuQuery;
-PDH_HCOUNTER cpuTotal;
-static CRITICAL_SECTION critical_section;
 static u64 watchdog_timeout_time;
 static u8 watchdog_enabled;
 static s32 prog_in_fd = 0;
 
-static HANDLE shm_handle;             /* Handle of the SHM region         */
-static HANDLE pipe_handle;            /* Handle of the name pipe          */
-static u64    name_seed;              /* Random integer to have a unique shm/pipe name */
-static char   *fuzzer_id = NULL;      /* The fuzzer ID or a randomized
+static u64 name_seed;              /* Random integer to have a unique shm/pipe name */
+static u8 *fuzzer_id = NULL;      /* The fuzzer ID or a randomized
 									  seed allowing multiple instances */
 
 static u8 *trace_bits,                /* SHM with instrumentation bitmap   */
@@ -85,7 +74,7 @@ static u8 *in_file,                   /* Minimizer input test case         */
 
 u8 *file_extension;
 
-static uint8_t* in_data;                   /* Input data for trimming           */
+static u8* in_data;                   /* Input data for trimming           */
 
 static u32 in_len,                    /* Input data length                 */
 		   orig_cksum,                /* Original checksum                 */
@@ -289,37 +278,6 @@ DebuggerStatus RunTarget(int argc, char **argv, unsigned int pid, uint32_t timeo
 }
 
 
-/* Get unix time in milliseconds */
-
-static u64 get_cur_time(void) {
-
-	u64 ret;
-	FILETIME filetime;
-	GetSystemTimeAsFileTime(&filetime);
-
-	ret = (((u64)filetime.dwHighDateTime) << 32) + (u64)filetime.dwLowDateTime;
-
-	return ret / 10000;
-
-}
-
-
-/* Get unix time in microseconds */
-
-static u64 get_cur_time_us(void) {
-
-	u64 ret;
-	FILETIME filetime;
-	GetSystemTimeAsFileTime(&filetime);
-
-	ret = (((u64)filetime.dwHighDateTime) << 32) + (u64)filetime.dwLowDateTime;
-
-	return ret / 10;
-
-}
-
-
-
 /* Configure shared memory. */
 
 static void setup_shm(void) {
@@ -327,7 +285,7 @@ static void setup_shm(void) {
 	char* shm_str = NULL;
 	u8 attempts = 0;
 
-	trace_bits = (u8*)ck_alloc(MAP_SIZE);
+	trace_bits = ck_alloc(MAP_SIZE);
 	if (!trace_bits) PFATAL("shmat() failed");
 
 }
@@ -337,7 +295,7 @@ static void setup_shm(void) {
 static void read_initial_file(void) {
 
 	struct stat st;
-	s32 fd = _open(in_file, O_RDONLY | O_BINARY);
+	s32 fd = open(in_file, O_RDONLY);
 
 	if (fd < 0) PFATAL("Unable to open '%s'", in_file);
 
@@ -348,11 +306,11 @@ static void read_initial_file(void) {
 		FATAL("Input file is too large (%u MB max)", TMIN_MAX_FILE / 1024 / 1024);
 
 	in_len = st.st_size;
-	in_data = (uint8_t*)ck_alloc_nozero(in_len);
+	in_data = ck_alloc_nozero(in_len);
 
 	ck_read(fd, in_data, in_len, in_file);
 
-	_close(fd);
+	close(fd);
 
 	OKF("Read %u byte%s from '%s'.", in_len, in_len == 1 ? "" : "s", in_file);
 
@@ -368,33 +326,19 @@ void SafeTerminateProcess() {
 
 static s32 write_to_file(u8* path, u8* mem, u32 len) {
 
-	s32 fd;
+    s32 ret;
 
-	_unlink(path); /* ignore errors */
+    unlink(path); /* Ignore errors */
 
-	fd = _open(path, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
-	if (fd < 0) {
-		SafeTerminateProcess();
-		_unlink(path); /* ignore errors */
-		fd = _open(path, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
-		if (fd < 0) {
-			if (errno == EEXIST) {
-				fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
-				if (fd < 0) {
-					PFATAL("Unable to create '%s'", path);
-				}
-			}
-			else {
-				PFATAL("Unable to create '%s'", path);
-			}
-		}
-	}
+    ret = open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
 
-	ck_write(fd, mem, len, path);
+    if (ret < 0) PFATAL("Unable to create '%s'", path);
 
-	_lseek(fd, 0, SEEK_SET);
+    ck_write(ret, mem, len, path);
 
-	return fd;
+    lseek(ret, 0, SEEK_SET);
+
+    return ret;
 
 }
 
@@ -432,7 +376,7 @@ static u8 run_target(int argc, char** argv, u8* mem, u32 len, u8 first_run) {
 	prog_in_fd = write_to_file(at_file, mem, len);
 
 	if (prog_in_fd) {
-		_close(prog_in_fd);
+		close(prog_in_fd);
 		prog_in_fd = 0;
 	}
 
@@ -492,7 +436,7 @@ static void minimize(int argc, char** argv) {
 
 	static u32 alpha_map[256];
 
-	u8* tmp_buf = (u8*)ck_alloc_nozero(in_len);
+	u8* tmp_buf = ck_alloc_nozero(in_len);
 	u32 orig_len = in_len, stage_o_len;
 
 	u32 del_len, set_len, del_pos, set_pos, i, alpha_size, cur_pass = 0;
@@ -563,7 +507,7 @@ next_del_blksize:
 	if (!del_len) del_len = 1;
 	del_pos = 0;
 	prev_del = 1;
-
+    
 	SAYF(cGRA "    Block length = %u, remaining size = %u\n" cRST,
 		del_len, in_len);
 
@@ -744,19 +688,12 @@ static void set_up_environment(void) {
 	}
 }
 
-/* Setup signal handlers, duh. */
-
-static void setup_signal_handlers(void) {
-	// not implemented on Windows
-}
-
-
 /* Detect @@ in args. */
 
 static void detect_file_args(int argc, char** argv) {
 
 	u32 i = 0;
-	u8* cwd = _getcwd(NULL, 0);
+	u8* cwd = getcwd(NULL, 0);
 
 	if (!cwd) PFATAL("getcwd() failed");
 
@@ -772,8 +709,6 @@ static void detect_file_args(int argc, char** argv) {
 
 			/* Be sure that we're always using fully-qualified paths. */
 
-			// if(at_file[0] == '/') aa_subst = at_file;
-			// else aa_subst = alloc_printf("%s/%s", cwd, at_file);
 			aa_subst = at_file;
 
 			/* Construct a replacement argv value. */
@@ -813,300 +748,12 @@ static void usage(u8* argv0) {
 
 		"  -t msec       - timeout for each run (%u ms)\n"
 
-		"For additional tips, please consult %s/README.\n\n",
+		"For additional tips, please consult README.\n\n",
 
-		argv0, EXEC_TIMEOUT, doc_path);
+		argv0, EXEC_TIMEOUT);
 
 	exit(1);
 
-}
-
-
-/* Find binary. */
-
-static void find_binary(u8* fname) {
-	// Not implemented on Windows
-}
-
-
-/* Read mask bitmap from file. This is for the -B option. */
-
-static void read_bitmap(u8* fname) {
-
-	s32 fd = _open(fname, O_RDONLY);
-
-	if (fd < 0) PFATAL("Unable to open '%s'", fname);
-
-	ck_read(fd, mask_bitmap, MAP_SIZE, fname);
-
-	_close(fd);
-
-}
-
-
-static unsigned int optind;
-static char *optarg;
-
-int getopt(int argc, char **argv, char *optstring) {
-	char *c;
-
-	optarg = NULL;
-
-	while (1) {
-		if (optind == argc) return -1;
-		if (strcmp(argv[optind], "--") == 0) return -1;
-		if (argv[optind][0] != '-') {
-			optind++;
-			continue;
-		}
-		if (!argv[optind][1]) {
-			optind++;
-			continue;
-		}
-
-		c = strchr(optstring, argv[optind][1]);
-		if (!c) return -1;
-		optind++;
-		if (c[1] == ':') {
-			if (optind == argc) return -1;
-			optarg = argv[optind];
-			optind++;
-		}
-
-		return (int)(c[0]);
-	}
-}
-
-static void extract_client_params(u32 argc, char** argv) {
-	u32 len = 1, i;
-	u32 nclientargs = 0;
-	u8* buf;
-	u32 opt_start, opt_end;
-	char *client_params;
-
-	if (!argv[optind] || optind >= argc) usage(argv[0]);
-	if (strcmp(argv[optind], "--")) usage(argv[0]);
-
-	optind++;
-	opt_start = optind;
-
-	for (i = optind; i < argc; i++) {
-		if (strcmp(argv[i], "--") == 0) break;
-		nclientargs++;
-		len += strlen(argv[i]) + 1;
-	}
-
-	if (i != argc) usage(argv[0]);
-	opt_end = i;
-
-	buf = client_params = (u8*)ck_alloc(len);
-
-	for (i = opt_start; i < opt_end; i++) {
-
-		u32 l = strlen(argv[i]);
-
-		memcpy(buf, argv[i], l);
-		buf += l;
-
-		*(buf++) = ' ';
-	}
-
-	if (buf != client_params) {
-		buf--;
-	}
-
-	*buf = 0;
-
-}
-
-/* Get the number of runnable processes, with some simple smoothing. */
-
-double get_runnable_processes(void) {
-	PDH_FMT_COUNTERVALUE counterVal;
-
-	PdhCollectQueryData(cpuQuery);
-	PdhGetFormattedCounterValue(cpuTotal, PDH_FMT_DOUBLE, NULL, &counterVal);
-	return counterVal.doubleValue;
-}
-
-/* Count the number of logical CPU cores. */
-
-void get_core_count(void) {
-
-	double cur_runnable = 0;
-
-	cpu_core_count = atoi(getenv("NUMBER_OF_PROCESSORS"));
-
-	if (cpu_core_count > 0) {
-
-		/* initialize PDH */
-
-		PdhOpenQuery(NULL, NULL, &cpuQuery);
-		PdhAddCounter(cpuQuery, TEXT("\\Processor(_Total)\\% Processor Time"), NULL, &cpuTotal);
-		PdhCollectQueryData(cpuQuery);
-
-		cur_runnable = get_runnable_processes();
-
-		OKF("You have %u CPU cores and utilization %0.0f%%.",
-			cpu_core_count, cur_runnable);
-
-		if (cpu_core_count > 1) {
-
-			if (cur_runnable >= 90.0) {
-
-				WARNF("System under apparent load, performance may be spotty.");
-
-			}
-
-		}
-
-	}
-	else {
-
-		cpu_core_count = 0;
-		WARNF("Unable to figure out the number of CPU cores.");
-
-	}
-
-}
-
-u64 get_process_affinity(u32 process_id) {
-	/* if we can't get process affinity we treat it as if he doesn't have affinity */
-	u64 affinity = -1ULL;
-	DWORD_PTR process_affinity_mask = 0;
-	DWORD_PTR system_affinity_mask = 0;
-
-	HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
-	if (process == NULL) {
-		return affinity;
-	}
-
-	if (GetProcessAffinityMask(process, &process_affinity_mask, &system_affinity_mask)) {
-		affinity = (u64)process_affinity_mask;
-	}
-
-	CloseHandle(process);
-
-	return affinity;
-}
-
-u32 count_mask_bits(u64 mask) {
-
-	u32 count = 0;
-
-	while (mask) {
-		if (mask & 1) {
-			count++;
-		}
-		mask >>= 1;
-	}
-
-	return count;
-}
-
-u32 get_bit_idx(u64 mask) {
-
-	u32 i;
-
-	for (i = 0; i < 64; i++) {
-		if (mask & (1ULL << i)) {
-			return i;
-		}
-	}
-
-	return 0;
-}
-
-void bind_to_free_cpu(void) {
-
-	u8 cpu_used[64];
-	u32 i = 0;
-	PROCESSENTRY32 process_entry;
-	HANDLE process_snap = INVALID_HANDLE_VALUE;
-
-	memset(cpu_used, 0, sizeof(cpu_used));
-
-	if (cpu_core_count < 2) return;
-
-	/* Currently tinyafl doesn't support more than 64 cores */
-	if (cpu_core_count > 64) {
-		SAYF("\n" cLRD "[-] " cRST
-			"Uh-oh, looks like you have %u CPU cores on your system\n"
-			"    TinyAFL doesn't support more than 64 cores at the momement\n"
-			"    you can set AFL_NO_AFFINITY and try again.\n",
-			cpu_core_count);
-		FATAL("Too many cpus for automatic binding");
-	}
-
-	if (getenv("AFL_NO_AFFINITY")) {
-
-		WARNF("Not binding to a CPU core (AFL_NO_AFFINITY set).");
-		return;
-	}
-
-	if (!cpu_aff) {
-		ACTF("Checking CPU core loadout...");
-
-		/* Introduce some jitter, in case multiple AFL tasks are doing the same
-		thing at the same time... */
-
-		srand(GetTickCount() + GetCurrentProcessId());
-		Sleep(R(1000) * 3);
-
-		process_snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-		if (process_snap == INVALID_HANDLE_VALUE) {
-			FATAL("Failed to create snapshot");
-		}
-
-		process_entry.dwSize = sizeof(PROCESSENTRY32);
-		if (!Process32First(process_snap, &process_entry)) {
-			CloseHandle(process_snap);
-			FATAL("Failed to enumerate processes");
-		}
-
-		do {
-			unsigned long cpu_idx = 0;
-			u64 affinity = get_process_affinity(process_entry.th32ProcessID);
-
-			if ((affinity == 0) || (count_mask_bits(affinity) > 1)) continue;
-
-			cpu_idx = get_bit_idx(affinity);
-			cpu_used[cpu_idx] = 1;
-		} while (Process32Next(process_snap, &process_entry));
-
-		CloseHandle(process_snap);
-
-		/* If the user only uses subset of the core, prefer non-sequential cores
-		   to avoid pinning two hyper threads of the same core */
-		for (i = 0; i < cpu_core_count; i += 2) if (!cpu_used[i]) break;
-
-		/* Fallback to the sequential scan */
-		if (i >= cpu_core_count) {
-			for (i = 0; i < cpu_core_count; i++) if (!cpu_used[i]) break;
-		}
-
-		if (i == cpu_core_count) {
-			SAYF("\n" cLRD "[-] " cRST
-				"Uh-oh, looks like all %u CPU cores on your system are allocated to\n"
-				"    other instances of afl-fuzz (or similar CPU-locked tasks). Starting\n"
-				"    another fuzzer on this machine is probably a bad plan, but if you are\n"
-				"    absolutely sure, you can set AFL_NO_AFFINITY and try again.\n",
-				cpu_core_count);
-
-			FATAL("No more free CPU cores");
-
-		}
-
-		OKF("Found a free CPU core, binding to #%u.", i);
-
-		cpu_aff = 1ULL << i;
-	}
-
-	if (!SetProcessAffinityMask(GetCurrentProcess(), (DWORD_PTR)cpu_aff)) {
-		FATAL("Failed to set process affinity");
-	}
-
-	OKF("Process affinity is set to %I64x.\n", cpu_aff);
 }
 
 /* Main entry point */
@@ -1116,14 +763,10 @@ int main(int argc, char** argv) {
 	u8  mem_limit_given = 0, timeout_given = 0, qemu_mode = 0;
 	char** use_argv;
 	u8 suffix = 0;
-	doc_path = "docs";
 	optind = 1;
 	int target_argc = 0;
 	char **target_argv = NULL;
 	//setup_watchdog_timer();
-
-	get_core_count();
-	bind_to_free_cpu();
 
 	SAYF(cCYA "afl-tmin " cBRI VERSION cRST " for tiny-afl\n");
 	SAYF(cCYA "Based on afl-tmin by <lcamtuf@google.com>\n");
@@ -1148,6 +791,8 @@ int main(int argc, char** argv) {
 	exec_tmout = GetIntOption("-t", argc, argv, EXEC_TIMEOUT);
 	timeout_given = 1;
 	target_module = GetOption("-instrument_module", argc, argv);
+    persist = GetBinaryOption("-persist", argc, argv, true);
+    num_iterations = GetIntOption("-iterations", argc, argv, 10000);
 
 	setup_shm();
 	set_up_environment();
@@ -1163,7 +808,7 @@ int main(int argc, char** argv) {
 	ACTF("Performing dry run (mem limit = %llu MB, timeout = %u ms%s)...",
 		mem_limit, exec_tmout, edges_only ? ", edges only" : "");
 
-	run_target(target_argc, target_argv, (u8*)in_data, in_len, 1);
+	run_target(target_argc, target_argv, in_data, in_len, 1);
 
 	if (child_timed_out)
 		FATAL("Target binary times out (adjusting -t may help).");
@@ -1187,7 +832,7 @@ int main(int argc, char** argv) {
 
 	ACTF("Writing output to '%s'...", out_file);
 
-	_close(write_to_file(out_file, (u8*)in_data, in_len));
+	close(write_to_file(out_file, in_data, in_len));
 
 	OKF("We're done here. Have a nice day!\n");
 

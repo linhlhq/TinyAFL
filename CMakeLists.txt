@@ -26,7 +26,7 @@ add_executable(afl-showmap
   config.h
   alloc-inl.h
   afl-showmap.cpp
-  )
+)
 
 target_link_libraries(afl-showmap tinyinst)
 
@@ -39,10 +39,9 @@ add_executable(afl-tmin
   config.h
   alloc-inl.h
   afl-tmin.cpp
-  )
+)
 
 target_link_libraries(afl-tmin tinyinst)
-
 
 project("AFL")
 
@@ -53,6 +52,6 @@ add_executable(AFL
   config.h
   alloc-inl.h
   afl-fuzz.cpp
-  )
+)
 
 target_link_libraries(AFL tinyinst)

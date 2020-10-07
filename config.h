@@ -1,17 +1,24 @@
 /*
-american fuzzy lop - vaguely configurable bits
-----------------------------------------------
+  Copyright 2013 Google LLC All rights reserved.
 
-Written and maintained by Michal Zalewski <lcamtuf@google.com>
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at:
 
-Copyright 2013, 2014, 2015, 2016 Google Inc. All rights reserved.
+    http://www.apache.org/licenses/LICENSE-2.0
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at:
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+*/
 
-http://www.apache.org/licenses/LICENSE-2.0
+/*
+   american fuzzy lop - vaguely configurable bits
+   ----------------------------------------------
 
+   Written and maintained by Michal Zalewski <lcamtuf@google.com>
 */
 
 #ifndef _HAVE_CONFIG_H
@@ -22,53 +29,59 @@ http://www.apache.org/licenses/LICENSE-2.0
 /* Version string: */
 
 #define VERSION             "1.00"
-#define WINAFL_VERSION		"1.06"
-#define AFL_VERSION			"2.39"
+#define WINAFL_VERSION        "1.06"
+#define AFL_VERSION            "2.39"
 
 /******************************************************
-*                                                    *
-*  Settings that may be of interest to power users:  *
-*                                                    *
-******************************************************/
+ *                                                    *
+ *  Settings that may be of interest to power users:  *
+ *                                                    *
+ ******************************************************/
 
 /* Comment out to disable terminal colors (note that this makes afl-analyze
-a lot less nice): */
+   a lot less nice): */
 
-//#define USE_COLOR
+#define MESSAGES_TO_STDOUT
 
 /* Comment out to disable fancy ANSI boxes and use poor man's 7-bit UI: */
 
-//#define FANCY_BOXES
+#define FANCY_BOXES
 
-/* Default timeout for fuzzed code (milliseconds): */
+/* Default timeout for fuzzed code (milliseconds). This is the upper bound,
+   also used for detecting hangs; the actual value is auto-scaled: */
 
-#define EXEC_TIMEOUT        10000
+#define EXEC_TIMEOUT        1000
 
 /* Timeout rounding factor when auto-scaling (milliseconds): */
 
 #define EXEC_TM_ROUND       20
 
+/* 64bit arch MACRO */
+#if (defined (__x86_64__) || defined (__arm64__) || defined (__aarch64__))
+#define WORD_SIZE_64 1
+#endif
+
 /* Default memory limit for child process (MB): */
 
-#ifndef __x86_64__ 
+#ifndef WORD_SIZE_64
 #  define MEM_LIMIT         25
 #else
 #  define MEM_LIMIT         50
-#endif /* ^!__x86_64__ */
+#endif /* ^!WORD_SIZE_64 */
 
 /* Default memory limit when running in QEMU mode (MB): */
 
 #define MEM_LIMIT_QEMU      200
 
 /* Number of calibration cycles per every new test case (and for test
-cases that show variable behavior): */
+   cases that show variable behavior): */
 
 #define CAL_CYCLES          8
 #define CAL_CYCLES_LONG     40
 
-/* Number of subsequent hangs before abandoning an input file: */
+/* Number of subsequent timeouts before abandoning an input file: */
 
-#define HANG_LIMIT          250
+#define TMOUT_LIMIT         250
 
 /* Maximum number of unique hangs or crashes to record: */
 
@@ -81,36 +94,28 @@ cases that show variable behavior): */
 #define HAVOC_CYCLES_INIT   1024
 
 /* Maximum multiplier for the above (should be a power of two, beware
-of 32-bit int overflows): */
+   of 32-bit int overflows): */
 
 #define HAVOC_MAX_MULT      16
-#define HAVOC_MAX_MULT_MOPT 32
+
 /* Absolute minimum number of havoc cycles (after all adjustments): */
 
 #define HAVOC_MIN           16
 
-/* Power Schedule Divisor */
-#define POWER_BETA          1
-#define MAX_FACTOR          (POWER_BETA * 32)
-
-/*Mopt options*/
-#define operator_num 18
-#define swarm_num 5
-#define period_core  500000
 /* Maximum stacking for havoc-stage tweaks. The actual value is calculated
-like this:
+   like this: 
 
-n = random between 1 and HAVOC_STACK_POW2
-stacking = 2^n
+   n = random between 1 and HAVOC_STACK_POW2
+   stacking = 2^n
 
-In other words, the default (n = 7) produces 2, 4, 8, 16, 32, 64, or
-128 stacked tweaks: */
+   In other words, the default (n = 7) produces 2, 4, 8, 16, 32, 64, or
+   128 stacked tweaks: */
 
 #define HAVOC_STACK_POW2    7
 
 /* Caps on block sizes for cloning and deletion operations. Each of these
-ranges has a 33% probability of getting picked, except for the first
-two cycles where smaller blocks are favored: */
+   ranges has a 33% probability of getting picked, except for the first
+   two cycles where smaller blocks are favored: */
 
 #define HAVOC_BLK_SMALL     32
 #define HAVOC_BLK_MEDIUM    128
@@ -121,7 +126,7 @@ two cycles where smaller blocks are favored: */
 #define HAVOC_BLK_XL        32768
 
 /* Probabilities of skipping non-favored entries in the queue, expressed as
-percentages: */
+   percentages: */
 
 #define SKIP_TO_NEW_PROB    99 /* ...when there are new, pending favorites */
 #define SKIP_NFAV_OLD_PROB  95 /* ...no new favs, cur entry already fuzzed */
@@ -140,7 +145,7 @@ percentages: */
 #define ARITH_MAX           35
 
 /* Limits for the test case trimmer. The absolute minimum chunk size; and
-the starting and ending divisors for chopping up the input file: */
+   the starting and ending divisors for chopping up the input file: */
 
 #define TRIM_MIN_BYTES      4
 #define TRIM_START_STEPS    16
@@ -169,21 +174,21 @@ the starting and ending divisors for chopping up the input file: */
 #define MAX_AUTO_EXTRA      32
 
 /* Maximum number of user-specified dictionary tokens to use in deterministic
-steps; past this point, the "extras/user" step will be still carried out,
-but with proportionally lower odds: */
+   steps; past this point, the "extras/user" step will be still carried out,
+   but with proportionally lower odds: */
 
 #define MAX_DET_EXTRAS      200
 
 /* Maximum number of auto-extracted dictionary tokens to actually use in fuzzing
-(first value), and to keep in memory as candidates. The latter should be much
-higher than the former. */
+   (first value), and to keep in memory as candidates. The latter should be much
+   higher than the former. */
 
 #define USE_AUTO_EXTRAS     50
 #define MAX_AUTO_EXTRAS     (USE_AUTO_EXTRAS * 10)
 
 /* Scaling factor for the effector map used to skip some of the more
-expensive deterministic steps. The actual divisor is set to
-2^EFF_MAP_SCALE2 bytes: */
+   expensive deterministic steps. The actual divisor is set to
+   2^EFF_MAP_SCALE2 bytes: */
 
 #define EFF_MAP_SCALE2      3
 
@@ -192,13 +197,13 @@ expensive deterministic steps. The actual divisor is set to
 #define EFF_MIN_LEN         128
 
 /* Maximum effector density past which everything is just fuzzed
-unconditionally (%): */
+   unconditionally (%): */
 
 #define EFF_MAX_PERC        90
 
 /* UI refresh frequency (Hz): */
 
-#define UI_TARGET_HZ        1
+#define UI_TARGET_HZ        5
 
 /* Fuzzer stats file and plot update intervals (sec): */
 
@@ -257,26 +262,23 @@ unconditionally (%): */
    2147483647    /* Overflow signed 32-bit when incremented */
 
 /***********************************************************
-*                                                         *
-*  Really exotic stuff you probably don't want to touch:  *
-*                                                         *
-***********************************************************/
+ *                                                         *
+ *  Really exotic stuff you probably don't want to touch:  *
+ *                                                         *
+ ***********************************************************/
 
 /* Call count interval between reseeding the libc PRNG from /dev/urandom: */
 
 #define RESEED_RNG          10000
 
 /* Maximum line length passed from GCC to 'as' and used for parsing
-configuration files: */
+   configuration files: */
 
 #define MAX_LINE            8192
 
-/* Environment variable used to pass SHM/PIPE ID to the called program. */
+/* Environment variable used to pass SHM ID to the called program. */
 
 #define SHM_ENV_VAR         "__AFL_SHM_ID"
-#define PIPE_ENV_VAR        "__AFL_PIPE_ID"
-#define TARGET_VAR          "AFL_TARGET"
-#define DUMP_VAR          "DUMP_TRACE"
 
 /* Other less interesting, internal-only variables. */
 
@@ -299,18 +301,18 @@ configuration files: */
 #define MSAN_ERROR          86
 
 /* Designated file descriptors for forkserver commands (the application will
-use FORKSRV_FD and FORKSRV_FD + 1): */
+   use FORKSRV_FD and FORKSRV_FD + 1): */
 
 #define FORKSRV_FD          198
 
 /* Fork server init timeout multiplier: we'll wait the user-selected
-timeout plus this much for the fork server to spin up. */
+   timeout plus this much for the fork server to spin up. */
 
 #define FORK_WAIT_MULT      10
 
 /* Calibration timeout adjustments, to be a bit more generous when resuming
-fuzzing sessions or trying to calibrate already-added internal finds.
-The first value is a percentage, the other is in milliseconds: */
+   fuzzing sessions or trying to calibrate already-added internal finds.
+   The first value is a percentage, the other is in milliseconds: */
 
 #define CAL_TMOUT_PERC      125
 #define CAL_TMOUT_ADD       50
@@ -320,10 +322,10 @@ The first value is a percentage, the other is in milliseconds: */
 #define CAL_CHANCES         3
 
 /* Map size for the traced binary (2^MAP_SIZE_POW2). Must be greater than
-2; you probably want to keep it under 18 or so for performance reasons
-(adjusting AFL_INST_RATIO when compiling is probably a better way to solve
-problems with complex programs). You need to recompile the target binary
-after changing this - otherwise, SEGVs may ensue. */
+   2; you probably want to keep it under 18 or so for performance reasons
+   (adjusting AFL_INST_RATIO when compiling is probably a better way to solve
+   problems with complex programs). You need to recompile the target binary
+   after changing this - otherwise, SEGVs may ensue. */
 
 #define MAP_SIZE_POW2       16
 #define MAP_SIZE            (1 << MAP_SIZE_POW2)
@@ -343,19 +345,19 @@ after changing this - otherwise, SEGVs may ensue. */
 #define  CTEST_BUSY_CYCLES  (10 * 1000 * 1000)
 
 /* Uncomment this to use inferior block-coverage-based instrumentation. Note
-that you need to recompile the target binary for this to have any effect: */
+   that you need to recompile the target binary for this to have any effect: */
 
 // #define COVERAGE_ONLY
 
 /* Uncomment this to ignore hit counts and output just one bit per tuple.
-As with the previous setting, you will need to recompile the target
-binary: */
+   As with the previous setting, you will need to recompile the target
+   binary: */
 
 // #define SKIP_COUNTS
 
 /* Uncomment this to use instrumentation data to record newly discovered paths,
-but do not use them as seeds for fuzzing. This is useful for conveniently
-measuring coverage that could be attained by a "dumb" fuzzing algorithm: */
+   but do not use them as seeds for fuzzing. This is useful for conveniently
+   measuring coverage that could be attained by a "dumb" fuzzing algorithm: */
 
 // #define IGNORE_FINDS
 

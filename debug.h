@@ -1,17 +1,24 @@
 /*
-american fuzzy lop - debug / error handling macros
---------------------------------------------------
+  Copyright 2013 Google LLC All rights reserved.
 
-Written and maintained by Michal Zalewski <lcamtuf@google.com>
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at:
 
-Copyright 2013, 2014, 2015, 2016 Google Inc. All rights reserved.
+    http://www.apache.org/licenses/LICENSE-2.0
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at:
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+*/
 
-http://www.apache.org/licenses/LICENSE-2.0
+/*
+   american fuzzy lop - debug / error handling macros
+   --------------------------------------------------
 
+   Written and maintained by Michal Zalewski <lcamtuf@google.com>
 */
 
 #ifndef _HAVE_DEBUG_H
@@ -22,17 +29,20 @@ http://www.apache.org/licenses/LICENSE-2.0
 #include "types.h"
 #include "config.h"
 
+
 /*add event when debug target*/
 
 enum {
-	DEBUGGER_FAULT_ERROR = 8, /*error when run target*/
-	DEBUGGER_NOINST = 9, /*no instrument*/
-	DEBUGGER_NOBITS = 10, /*no new coverage*/
+    DEBUGGER_FAULT_ERROR = 8, /*error when run target*/
+    DEBUGGER_NOINST = 9, /*no instrument*/
+    DEBUGGER_NOBITS = 10, /*no new coverage*/
 };
 
+
+
 /*******************
-* Terminal colors *
-*******************/
+ * Terminal colors *
+ *******************/
 
 #ifdef USE_COLOR
 
@@ -111,8 +121,8 @@ enum {
 #endif /* ^USE_COLOR */
 
 /*************************
-* Box drawing sequences *
-*************************/
+ * Box drawing sequences *
+ *************************/
 
 #ifdef FANCY_BOXES
 
@@ -153,113 +163,107 @@ enum {
 #endif /* ^FANCY_BOXES */
 
 /***********************
-* Misc terminal codes *
-***********************/
-/*
+ * Misc terminal codes *
+ ***********************/
+
 #define TERM_HOME     "\x1b[H"
 #define TERM_CLEAR    TERM_HOME "\x1b[2J"
 #define cEOL          "\x1b[0K"
 #define CURSOR_HIDE   "\x1b[?25l"
 #define CURSOR_SHOW   "\x1b[?25h"
-*/
-#define TERM_HOME     ""
-#define TERM_CLEAR    ""
-#define cEOL          ""
-#define CURSOR_HIDE   ""
-#define CURSOR_SHOW   ""
 
 /************************
-* Debug & error macros *
-************************/
+ * Debug & error macros *
+ ************************/
 
 /* Just print stuff to the appropriate stream. */
 
 #ifdef MESSAGES_TO_STDOUT
-#  define SAYF(...)    printf(__VA_ARGS__)
+#  define SAYF(x...)    printf(x)
 #else 
-#  define SAYF(...)    fprintf(stderr, __VA_ARGS__)
+#  define SAYF(x...)    fprintf(stderr, x)
 #endif /* ^MESSAGES_TO_STDOUT */
 
 /* Show a prefixed warning. */
 
-#define WARNF(...) do { \
-    SAYF(cYEL "[!] " cBRI "WARNING: " cRST __VA_ARGS__); \
+#define WARNF(x...) do { \
+    SAYF(cYEL "[!] " cBRI "WARNING: " cRST x); \
     SAYF(cRST "\n"); \
-    } while (0)
+  } while (0)
 
 /* Show a prefixed "doing something" message. */
 
-#define ACTF(...) do { \
-    SAYF(cLBL "[*] " cRST __VA_ARGS__); \
+#define ACTF(x...) do { \
+    SAYF(cLBL "[*] " cRST x); \
     SAYF(cRST "\n"); \
-    } while (0)
+  } while (0)
 
 /* Show a prefixed "success" message. */
 
-#define OKF(...) do { \
-    SAYF(cLGN "[+] " cRST __VA_ARGS__); \
+#define OKF(x...) do { \
+    SAYF(cLGN "[+] " cRST x); \
     SAYF(cRST "\n"); \
-    } while (0)
+  } while (0)
 
 /* Show a prefixed fatal error message (not used in afl). */
 
-#define BADF(...) do { \
-    SAYF(cLRD "\n[-] " cRST __VA_ARGS__); \
+#define BADF(x...) do { \
+    SAYF(cLRD "\n[-] " cRST x); \
     SAYF(cRST "\n"); \
-    } while (0)
+  } while (0)
 
 /* Die with a verbose non-OS fatal error message. */
 
-#define FATAL(...) do { \
+#define FATAL(x...) do { \
     SAYF(bSTOP RESET_G1 CURSOR_SHOW cRST cLRD "\n[-] PROGRAM ABORT : " \
-         cBRI __VA_ARGS__); \
+         cBRI x); \
     SAYF(cLRD "\n         Location : " cRST "%s(), %s:%u\n\n", \
          __FUNCTION__, __FILE__, __LINE__); \
-    exit(11); \
-    } while (0)
+    exit(1); \
+  } while (0)
 
 /* Die by calling abort() to provide a core dump. */
 
-#define ABORT(...) do { \
+#define ABORT(x...) do { \
     SAYF(bSTOP RESET_G1 CURSOR_SHOW cRST cLRD "\n[-] PROGRAM ABORT : " \
-         cBRI __VA_ARGS__); \
+         cBRI x); \
     SAYF(cLRD "\n    Stop location : " cRST "%s(), %s:%u\n\n", \
          __FUNCTION__, __FILE__, __LINE__); \
     abort(); \
-    } while (0)
+  } while (0)
 
 /* Die while also including the output of perror(). */
 
-#define PFATAL(...) do { \
+#define PFATAL(x...) do { \
     fflush(stdout); \
     SAYF(bSTOP RESET_G1 CURSOR_SHOW cRST cLRD "\n[-]  SYSTEM ERROR : " \
-         cBRI __VA_ARGS__); \
+         cBRI x); \
     SAYF(cLRD "\n    Stop location : " cRST "%s(), %s:%u\n", \
          __FUNCTION__, __FILE__, __LINE__); \
     SAYF(cLRD "       OS message : " cRST "%s\n", strerror(errno)); \
     exit(1); \
-    } while (0)
+  } while (0)
 
 /* Die with FAULT() or PFAULT() depending on the value of res (used to
-interpret different failure modes for read(), write(), etc). */
+   interpret different failure modes for read(), write(), etc). */
 
-#define RPFATAL(res, ...) do { \
-    if (res < 0) PFATAL(__VA_ARGS__); else FATAL(__VA_ARGS__); \
-    } while (0)
+#define RPFATAL(res, x...) do { \
+    if (res < 0) PFATAL(x); else FATAL(x); \
+  } while (0)
 
 /* Error-checking versions of read() and write() that call RPFATAL() as
-appropriate. */
+   appropriate. */
 
 #define ck_write(fd, buf, len, fn) do { \
     u32 _len = (len); \
-    s32 _res = _write(fd, buf, _len); \
+    s32 _res = write(fd, buf, _len); \
     if (_res != _len) RPFATAL(_res, "Short write to %s", fn); \
-    } while (0)
+  } while (0)
 
 #define ck_read(fd, buf, len, fn) do { \
     u32 _len = (len); \
-    s32 _res = _read(fd, buf, _len); \
+    s32 _res = read(fd, buf, _len); \
     if (_res != _len) RPFATAL(_res, "Short read from %s", fn); \
-    } while (0)
+  } while (0)
 
 #endif /* ! _HAVE_DEBUG_H */

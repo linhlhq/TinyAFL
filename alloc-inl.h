@@ -1,22 +1,29 @@
 /*
+  Copyright 2013 Google LLC All rights reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+*/
+
+/*
    american fuzzy lop - error-checking, memory-zeroing alloc routines
    ------------------------------------------------------------------
 
    Written and maintained by Michal Zalewski <lcamtuf@google.com>
 
-   Copyright 2013, 2014, 2015 Google Inc. All rights reserved.
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at:
-
-     http://www.apache.org/licenses/LICENSE-2.0
-
    This allocator is not designed to resist malicious attackers (the canaries
    are small and predictable), but provides a robust and portable way to detect
    use-after-free, off-by-one writes, stale pointers, and so on.
-
- */
+*/
 
 #ifndef _HAVE_ALLOC_INL_H
 #define _HAVE_ALLOC_INL_H
@@ -28,6 +35,17 @@
 #include "config.h"
 #include "types.h"
 #include "debug.h"
+
+/* User-facing macro to sprintf() to a dynamically allocated buffer. */
+
+#define alloc_printf(_str...) ({ \
+    char* _tmp; \
+    s32 _len = snprintf(NULL, 0, _str); \
+    if (_len < 0) FATAL("Whoa, snprintf() fails?!"); \
+    _tmp = ck_alloc(_len + 1); \
+    snprintf(_tmp, _len + 1, _str); \
+    _tmp; \
+  })
 
 /* Macro to enforce allocation limits as a last-resort defense against
    integer overflows. */
@@ -48,7 +66,7 @@
 
 #define ALLOC_MAGIC_C1  0xFF00FF00 /* Used head (dword)  */
 #define ALLOC_MAGIC_F   0xFE00FE00 /* Freed head (dword) */
-#define ALLOC_MAGIC_C2  0xF0 /* Used tail (byte)   */
+#define ALLOC_MAGIC_C2  0xF0       /* Used tail (byte)   */
 
 /* Positions of guard tokens in relation to the user-visible pointer. */
 
@@ -72,7 +90,7 @@
           ABORT("Use after free."); \
         else ABORT("Corrupted head alloc canary."); \
       } \
-      if ((u8)(ALLOC_C2(_p) ^ ALLOC_MAGIC_C2)) \
+      if ((u8)ALLOC_C2(_p) ^ (u8)ALLOC_MAGIC_C2) \
         ABORT("Corrupted tail alloc canary."); \
     } \
   } while (0)
@@ -87,21 +105,22 @@
 /* Allocate a buffer, explicitly not zeroing it. Returns NULL for zero-sized
    requests. */
 
-static inline void* DFL_ck_alloc_nozero(u32 size) {
+static inline char* DFL_ck_alloc_nozero(u32 size) {
 
-  u8* ret;
+  char* ret = NULL;
 
   if (!size) return NULL;
 
   ALLOC_CHECK_SIZE(size);
-  ret = (u8*)malloc(size + ALLOC_OFF_TOTAL);
+  ret = (char*)malloc(size + ALLOC_OFF_TOTAL);
   ALLOC_CHECK_RESULT(ret, size);
 
   ret += ALLOC_OFF_HEAD;
 
   ALLOC_C1(ret) = ALLOC_MAGIC_C1;
   ALLOC_S(ret)  = size;
-  ALLOC_C2(ret) = (u8)ALLOC_MAGIC_C2;
+  ALLOC_C2(ret) = ALLOC_MAGIC_C2;
+
   return ret;
 
 }
@@ -109,14 +128,14 @@ static inline void* DFL_ck_alloc_nozero(u32 size) {
 
 /* Allocate a buffer, returning zeroed memory. */
 
-static inline void* DFL_ck_alloc(u32 size) {
+static inline char* DFL_ck_alloc(u32 size) {
 
-  void* mem;
+  char* mem = NULL;
 
   if (!size) return NULL;
   mem = DFL_ck_alloc_nozero(size);
 
-  return memset(mem, 0, size);
+  return (char*)memset(mem, 0, size);
 
 }
 
@@ -127,23 +146,8 @@ static inline void* DFL_ck_alloc(u32 size) {
 static inline void DFL_ck_free(u8* mem) {
 
   if (!mem) return;
-
-  //CHECK_PTR(mem);
-
-  u8* _p = mem;
-do { 
-    if (_p) { 
-      if (ALLOC_C1(_p) ^ ALLOC_MAGIC_C1) {
-        if (ALLOC_C1(_p) == ALLOC_MAGIC_F) 
-          ABORT("Use after free."); 
-		else {
-			ABORT("Corrupted head alloc canary.");
-		}
-      } 
-      if ((u8)(ALLOC_C2(_p) ^ ALLOC_MAGIC_C2)) 
-        ABORT("Corrupted tail alloc canary."); 
-	    } 
-} while (0);
+    
+  CHECK_PTR(mem);
 
 #ifdef DEBUG_BUILD
 
@@ -163,9 +167,9 @@ do {
    With DEBUG_BUILD, the buffer is always reallocated to a new addresses and the
    old memory is clobbered with 0xFF. */
 
-static inline void* DFL_ck_realloc(u8* orig, u32 size) {
+static inline char* DFL_ck_realloc(char* orig, u32 size) {
 
-  u8* ret;
+  char* ret = NULL;
   u32   old_size = 0;
 
   if (!size) {
@@ -194,7 +198,7 @@ static inline void* DFL_ck_realloc(u8* orig, u32 size) {
 
 #ifndef DEBUG_BUILD
 
-  ret = (u8*)realloc(orig, size + ALLOC_OFF_TOTAL);
+  ret = (char*)realloc(orig, size + ALLOC_OFF_TOTAL);
   ALLOC_CHECK_RESULT(ret, size);
 
 #else
@@ -222,7 +226,7 @@ static inline void* DFL_ck_realloc(u8* orig, u32 size) {
 
   ALLOC_C1(ret) = ALLOC_MAGIC_C1;
   ALLOC_S(ret)  = size;
-  ALLOC_C2(ret) = (u8)ALLOC_MAGIC_C2;
+  ALLOC_C2(ret) = ALLOC_MAGIC_C2;
 
   if (size > old_size)
     memset(ret + old_size, 0, size - old_size);
@@ -235,7 +239,7 @@ static inline void* DFL_ck_realloc(u8* orig, u32 size) {
 /* Re-allocate a buffer with ALLOC_BLK_INC increments (used to speed up
    repeated small reallocs without complicating the user code). */
 
-static inline void* DFL_ck_realloc_block(u8* orig, u32 size) {
+static inline u8* DFL_ck_realloc_block(u8* orig, u32 size) {
 
 #ifndef DEBUG_BUILD
 
@@ -260,12 +264,12 @@ static inline void* DFL_ck_realloc_block(u8* orig, u32 size) {
 
 static inline u8* DFL_ck_strdup(u8* str) {
 
-  u8* ret;
+  u8* ret = NULL;
   u32   size;
 
   if (!str) return NULL;
 
-  size = strlen((char*)str) + 1;
+  size = strlen(str) + 1;
 
   ALLOC_CHECK_SIZE(size);
   ret = (u8*)malloc(size + ALLOC_OFF_TOTAL);
@@ -275,7 +279,7 @@ static inline u8* DFL_ck_strdup(u8* str) {
 
   ALLOC_C1(ret) = ALLOC_MAGIC_C1;
   ALLOC_S(ret)  = size;
-  ALLOC_C2(ret) = (u8)ALLOC_MAGIC_C2;
+  ALLOC_C2(ret) = ALLOC_MAGIC_C2;
 
   return (u8*)memcpy(ret, str, size);
 
@@ -285,9 +289,9 @@ static inline u8* DFL_ck_strdup(u8* str) {
 /* Create a buffer with a copy of a memory block. Returns NULL for zero-sized
    or NULL inputs. */
 
-static inline void* DFL_ck_memdup(void* mem, u32 size) {
+static inline u8* DFL_ck_memdup(char* mem, u32 size) {
 
-  u8* ret;
+  u8* ret = NULL;
 
   if (!mem || !size) return NULL;
 
@@ -299,9 +303,9 @@ static inline void* DFL_ck_memdup(void* mem, u32 size) {
 
   ALLOC_C1(ret) = ALLOC_MAGIC_C1;
   ALLOC_S(ret)  = size;
-  ALLOC_C2(ret) = (u8)ALLOC_MAGIC_C2;
+  ALLOC_C2(ret) = ALLOC_MAGIC_C2;
 
-  return memcpy(ret, mem, size);
+  return (u8*)memcpy(ret, mem, size);
 
 }
 
@@ -311,7 +315,7 @@ static inline void* DFL_ck_memdup(void* mem, u32 size) {
 
 static inline u8* DFL_ck_memdup_str(u8* mem, u32 size) {
 
-  u8* ret;
+  u8* ret = NULL;
 
   if (!mem || !size) return NULL;
 
@@ -323,7 +327,7 @@ static inline u8* DFL_ck_memdup_str(u8* mem, u32 size) {
 
   ALLOC_C1(ret) = ALLOC_MAGIC_C1;
   ALLOC_S(ret)  = size;
-  ALLOC_C2(ret) = (u8)ALLOC_MAGIC_C2;
+  ALLOC_C2(ret) = ALLOC_MAGIC_C2;
 
   memcpy(ret, mem, size);
   ret[size] = 0;
@@ -569,21 +573,5 @@ static inline void TRK_ck_free(void* ptr, const char* file,
   TRK_ck_free(_p1, __FILE__, __FUNCTION__, __LINE__)
 
 #endif /* ^!DEBUG_BUILD */
-
-/* User-facing macro to sprintf() to a dynamically allocated buffer. */
-
-char *alloc_printf(const char *_str, ...) {
-	va_list argptr;
-	u8* _tmp;
-	s32 _len;
-
-	va_start(argptr, _str);
-	_len = vsnprintf(NULL, 0, _str, argptr);
-	if (_len < 0) FATAL("Whoa, snprintf() fails?!");
-	_tmp = (u8*)ck_alloc(_len + 1);
-	vsnprintf(_tmp, _len + 1, _str, argptr);
-	va_end(argptr);
-	return _tmp;
-}
 
 #endif /* ! _HAVE_ALLOC_INL_H */
