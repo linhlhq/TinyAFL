@@ -1103,10 +1103,10 @@ inline u8 has_new_bits(u8* virgin_map) {
 				/* Looks like we have not found any new bytes yet; see if any non-zero
 				bytes in current[] are pristine in virgin[]. */
 #ifdef _WIN64
-				if ((cur[0] && vir[0] == 0xff) || (cur[1] && vir[1] == 0xff) ||
-					(cur[2] && vir[2] == 0xff) || (cur[3] && vir[3] == 0xff) ||
-					(cur[4] && vir[4] == 0xff) || (cur[5] && vir[5] == 0xff) ||
-					(cur[6] && vir[6] == 0xff) || (cur[7] && vir[7] == 0xff)) ret = 2;
+				if ((cur[0] && (vir[0] & 0xff) == 0xff) || (cur[1] && (vir[1] & 0xff) == 0xff) ||
+					(cur[2] && (vir[2] & 0xff) == 0xff) || (cur[3] && (vir[3] & 0xff) == 0xff) ||
+					(cur[4] && (vir[4] & 0xff) == 0xff) || (cur[5] && (vir[5] & 0xff) == 0xff) ||
+					(cur[6] && (vir[6] & 0xff) == 0xff) || (cur[7] && (vir[7] & 0xff) == 0xff)) ret = 2;
 				else ret = 1;
 #else
 				if ((cur[0] && (vir[0] & 0xff) == 0xff) || (cur[1] && (vir[1] & 0xff) == 0xff) ||
