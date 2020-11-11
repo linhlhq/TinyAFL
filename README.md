@@ -1,12 +1,10 @@
 # TinyAFL
 
-Release Version: 1.0
+Release Version: 1.1
 
 TinyAFL is built on top of AFL and [TinyInst](https://github.com/googleprojectzero/TinyInst).
 
 It can be fuzz on windows user-mode application without source (supports both x32 and x64) but it is not so reliable and dirty. It still has some instrument bugs, I will fix it when I fully understand TinyInst :P
-
-I have reported some MediaFoundations bugs using this tool. Such as CVE-2020-1319,...
 
 ## Contents
   1. [Features](#features-of-tinyafl)
@@ -21,6 +19,10 @@ TinyAFL supports [AFLfast](https://github.com/mboehme/aflfastTinyAFL)'s power sc
 <p align="center">
 <img alt="AFL.exe" src="screenshots/status.gif"/>
 </p>
+
+#### Known CVEs
+I have reported some MediaFoundations bugs using this tool. 
+* [Microsoft] CVE-2020-1319, CVE-2020-17105, CVE-2020-17109 ...
 
 ## Building TinyAFL
 Although TinyAFL x64 can run both for 32bit and 64bit targets, I still recommend TinyAFL 32bit for 32bit targets and TinyAFL 64bit for 64bit targets.
