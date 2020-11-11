@@ -21,7 +21,7 @@ http://www.apache.org/licenses/LICENSE-2.0
 
 /* Version string: */
 
-#define VERSION             "1.00"
+#define VERSION             "1.10"
 #define WINAFL_VERSION		"1.06"
 #define AFL_VERSION			"2.39"
 
@@ -50,11 +50,11 @@ a lot less nice): */
 
 /* Default memory limit for child process (MB): */
 
-#ifndef __x86_64__ 
+#ifndef _WIN64 
 #  define MEM_LIMIT         25
 #else
 #  define MEM_LIMIT         50
-#endif /* ^!__x86_64__ */
+#endif /* _WIN64 */
 
 /* Default memory limit when running in QEMU mode (MB): */
 

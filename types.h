@@ -41,11 +41,11 @@ about 'unsigned long' being unsafe to pass to %llu.
 
 */
 
-#ifdef __x86_64__
+#ifdef _WIN64
 typedef unsigned long long u64;
 #else
 typedef uint64_t u64;
-#endif /* ^__x86_64__ */
+#endif /* _WIN64 */
 
 typedef int8_t   s8;
 typedef int16_t  s16;
