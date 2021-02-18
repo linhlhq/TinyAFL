@@ -22,7 +22,8 @@ TinyAFL supports [AFLfast](https://github.com/mboehme/aflfastTinyAFL)'s power sc
 
 #### Known CVEs
 I have reported some MediaFoundations bugs using this tool. 
-* [Microsoft] CVE-2020-1319, CVE-2020-17105, CVE-2020-17109 ...
+* [Microsoft] CVE-2020-1319, CVE-2020-17105, CVE-2020-17109, CVE-2020-17022, CVE-2021-1643, CVE-2021-1644 ...
+* [Microsoft] CVE-2021-24080 - found by [Symeon Paraschoudis](https://twitter.com/symeonp)
 
 ## Building TinyAFL
 Although TinyAFL x64 can run both for 32bit and 64bit targets, I still recommend TinyAFL 32bit for 32bit targets and TinyAFL 64bit for 64bit targets.
