@@ -63,6 +63,9 @@ void Debugger::CreateException(EXCEPTION_RECORD *win_exception_record,
   case EXCEPTION_ILLEGAL_INSTRUCTION:
     exception->type = ILLEGAL_INSTRUCTION;
     break;
+  case EXCEPTION_STACK_OVERFLOW:
+    exception->type = STACK_OVERFLOW;
+    break;
   default:
     exception->type = OTHER;
     break;
@@ -291,7 +294,8 @@ DWORD Debugger::WindowsProtectionFlags(MemoryProtection protection) {
 void *Debugger::RemoteAllocateNear(uint64_t region_min,
   uint64_t region_max,
   size_t size,
-  MemoryProtection protection)
+  MemoryProtection protection,
+  bool use_shared_memory)
 {
   void *ret = NULL;
 
@@ -386,7 +390,7 @@ void *Debugger::RemoteAllocateBefore(uint64_t min_address,
 }
 
 // allocates memory in target process as close as possible
-// to min_address, but not higher than min_address
+// to min_address, but not higher than max_address
 void *Debugger::RemoteAllocateAfter(uint64_t min_address,
   uint64_t max_address,
   size_t size,
@@ -708,7 +712,7 @@ void Debugger::AddBreakpoint(void *address, int type) {
 
 // damn it Windows, why don't you have a GetProcAddress
 // that works on another process
-DWORD Debugger::GetProcOffset(char *data, char *name) {
+DWORD Debugger::GetProcOffset(char *data, const char *name) {
   DWORD pe_offset;
   pe_offset = *((DWORD *)(data + 0x3C));
   char *pe = data + pe_offset;
@@ -771,7 +775,7 @@ char *Debugger::GetTargetAddress(HMODULE module) {
   {
     FATAL("Error reading target memory\n");
   }
-  DWORD offset = GetProcOffset((char *)modulebuf, target_method);
+  DWORD offset = GetProcOffset((char *)modulebuf, target_method.c_str());
   free(modulebuf);
   if (offset) {
     return (char *)module + offset;
@@ -808,7 +812,7 @@ char *Debugger::GetTargetAddress(HMODULE module) {
                                              0,
                                              NULL,
                                              0);
-  if (SymFromName(child_handle, target_method, pSymbol)) {
+  if (SymFromName(child_handle, target_method.c_str(), pSymbol)) {
     target_offset = (unsigned long)(pSymbol->Address - sym_base_address);
     method_address = base_of_dll + target_offset;
   }
@@ -821,7 +825,7 @@ char *Debugger::GetTargetAddress(HMODULE module) {
 void Debugger::OnModuleLoaded(void *module, char *module_name) {
   // printf("In on_module_loaded, name: %s, base: %p\n", module_name, module_info.lpBaseOfDll);
 
-  if (target_function_defined && _stricmp(module_name, target_module) == 0) {
+  if (target_function_defined && _stricmp(module_name, target_module.c_str()) == 0) {
     target_address = GetTargetAddress((HMODULE)module);
     if (!target_address) {
       FATAL("Error determining target method address\n");
@@ -853,9 +857,9 @@ void Debugger::ReadStack(void *stack_addr, void **buffer, size_t numitems) {
   ReadProcessMemory(child_handle, stack_addr, buffer, numitems * child_ptr_size, &numrw);
 }
 
-// writes numitems entries from stack in remote process
-// from stack_addr
-// into buffer
+// writes numitems entries to stack in remote process
+// from buffer
+// into stack_addr
 void Debugger::WriteStack(void *stack_addr, void **buffer, size_t numitems) {
   SIZE_T numrw = 0;
 #ifdef _WIN64
@@ -1182,6 +1186,22 @@ void Debugger::OnProcessCreated() {
     child_thread_handle = info->hThread;
     child_entrypoint_reached = true;
     GetProcessPlatform();
+
+    // In case of attaching to an existing process
+    // the dll load event for the main module
+    // will *not* be generated.
+    // Handle the main module load below
+    char filename[MAX_PATH];
+    GetFinalPathNameByHandleA(info->hFile, (LPSTR)(&filename), sizeof(filename), 0);
+    char* base_name = strrchr(filename, '\\');
+    if (base_name) base_name += 1;
+    else base_name = filename;
+    if (trace_debug_events)
+      printf("Debugger: Loaded module %s at %p\n",
+        base_name,
+        (void*)info->lpBaseOfImage);
+    OnModuleLoaded(info->lpBaseOfImage, base_name);
+
   } else {
     // add a brekpoint to the process entrypoint
     void *entrypoint = GetModuleEntrypoint(info->lpBaseOfImage);
@@ -1256,14 +1276,15 @@ DebuggerStatus Debugger::HandleExceptionInternal(EXCEPTION_RECORD *exception_rec
     break;
 
   default:
-    //printf("Unhandled exception %x\n", exception_record->ExceptionCode);
+    if (trace_debug_events)
+      printf("Unhandled exception %x\n", exception_record->ExceptionCode);
     dbg_continue_status = DBG_EXCEPTION_NOT_HANDLED;
     return DEBUGGER_CONTINUE;
   }
 }
 
 // standard debugger loop that listens to events in the target process
-DebuggerStatus Debugger::DebugLoop()
+DebuggerStatus Debugger::DebugLoop(uint32_t timeout, bool killing)
 {
   DebuggerStatus ret;
   bool alive = true;
@@ -1280,8 +1301,14 @@ DebuggerStatus Debugger::DebugLoop()
   {
     have_thread_context = false;
 
+    uint64_t begin_time = GetCurTime();
     BOOL wait_ret = WaitForDebugEvent(DebugEv, 100);
+    uint64_t end_time = GetCurTime();
 
+    uint64_t time_elapsed = end_time - begin_time;
+    timeout = ((uint64_t)timeout >= time_elapsed) ? timeout - (uint32_t)time_elapsed : 0;
+
+    // printf("timeout: %u\n", timeout);
     // printf("time: %lld\n", get_cur_time_us());
 
     if (wait_ret) {
@@ -1290,7 +1317,7 @@ DebuggerStatus Debugger::DebugLoop()
       dbg_continue_needed = false;
     }
 
-    if (GetCurTime() > dbg_timeout_time) return DEBUGGER_HANGED;
+    if (timeout == 0) return DEBUGGER_HANGED;
 
     if (!wait_ret) {
       //printf("WaitForDebugEvent returned 0\n");
@@ -1306,9 +1333,13 @@ DebuggerStatus Debugger::DebugLoop()
     switch (DebugEv->dwDebugEventCode)
     {
     case EXCEPTION_DEBUG_EVENT:
-      ret = HandleExceptionInternal(&DebugEv->u.Exception.ExceptionRecord);
-      if (ret == DEBUGGER_CRASHED) OnCrashed(&last_exception);
-      if (ret != DEBUGGER_CONTINUE) return ret;
+      if (!killing) {
+        ret = HandleExceptionInternal(&DebugEv->u.Exception.ExceptionRecord);
+        if (ret == DEBUGGER_CRASHED) OnCrashed(&last_exception);
+        if (ret != DEBUGGER_CONTINUE) return ret;
+      } else {
+        dbg_continue_status = DBG_EXCEPTION_NOT_HANDLED;
+      }
       break;
 
     case CREATE_THREAD_DEBUG_EVENT:
@@ -1331,7 +1362,7 @@ DebuggerStatus Debugger::DebugLoop()
       break;
 
     case LOAD_DLL_DEBUG_EVENT: {
-      HandleDllLoadInternal(&DebugEv->u.LoadDll);
+      if(!killing) HandleDllLoadInternal(&DebugEv->u.LoadDll);
       CloseHandle(DebugEv->u.LoadDll.hFile);
       break;
     }
@@ -1476,10 +1507,7 @@ DebuggerStatus Debugger::Kill() {
 
   TerminateProcess(child_handle, 0);
   
-  // no timeout for process killing
-  dbg_timeout_time = 0xFFFFFFFFFFFFFFFFLL;
-
-  dbg_last_status = DebugLoop();
+  dbg_last_status = DebugLoop(0xFFFFFFFFUL, true);
   if (dbg_last_status != DEBUGGER_PROCESS_EXIT) {
     FATAL("Error killing target process\n");
   }
@@ -1542,8 +1570,7 @@ DebuggerStatus Debugger::Continue(uint32_t timeout) {
     return dbg_last_status;
   }
 
-  dbg_timeout_time = GetCurTime() + timeout;
-  dbg_last_status = DebugLoop();
+  dbg_last_status = DebugLoop(timeout);
 
   if (dbg_last_status == DEBUGGER_PROCESS_EXIT) {
     CloseHandle(child_handle);
@@ -1558,7 +1585,7 @@ DebuggerStatus Debugger::Continue(uint32_t timeout) {
 // initializes options from command line
 void Debugger::Init(int argc, char **argv) {
   have_thread_context = false;
-  sinkhole_stds = true;
+  sinkhole_stds = false;
   mem_limit = 0;
   cpu_aff = 0;
 
@@ -1585,10 +1612,10 @@ void Debugger::Init(int argc, char **argv) {
                                        trace_debug_events);
 
   option = GetOption("-target_module", argc, argv);
-  if (option) strncpy(target_module, option, MAX_PATH);
+  if (option) target_module = option;
 
   option = GetOption("-target_method", argc, argv);
-  if (option) strncpy(target_method, option, MAX_PATH);
+  if (option) target_method = option;
 
   loop_mode = GetBinaryOption("-loop", argc, argv, loop_mode);
 

@@ -73,5 +73,26 @@ xed_phash_invalid_const(const xed_decoded_inst_t* d) {
     (void) d; 
 }
 
+static XED_INLINE void xed_ild_set_has_modrm(xed_decoded_inst_t* d, xed_uint8_t v) {
+    d->u.ild_data.s.has_modrm = v;
+}
+static XED_INLINE xed_uint8_t xed_ild_get_has_modrm(xed_decoded_inst_t const* d) {
+    return d->u.ild_data.s.has_modrm;
+}
+
+static XED_INLINE void xed_ild_set_has_disp(xed_decoded_inst_t* d, xed_uint8_t v) {
+    d->u.ild_data.s.has_disp = v;
+}
+static XED_INLINE xed_uint8_t xed_ild_get_has_disp(xed_decoded_inst_t const* d) {
+    return d->u.ild_data.s.has_disp;
+}
+
+static XED_INLINE void xed_ild_set_has_imm(xed_decoded_inst_t* d, xed_uint8_t v) {
+    d->u.ild_data.s.has_imm = v;
+}
+static XED_INLINE xed_uint8_t xed_ild_get_has_imm(xed_decoded_inst_t const* d) {
+    return d->u.ild_data.s.has_imm;
+}
+
 
 #endif

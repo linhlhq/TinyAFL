@@ -36,6 +36,13 @@ int cur_iteration;
 // (should know what to do in pretty much all cases)
 void RunTarget(int argc, char **argv, unsigned int pid, uint32_t timeout) {
   DebuggerStatus status;
+  
+  if (instrumentation->IsTargetFunctionDefined()) {
+    if (cur_iteration == num_iterations) {
+      instrumentation->Kill();
+      cur_iteration = 0;
+    }
+  }
 
   // else clear only when the target function is reached
   if (!instrumentation->IsTargetFunctionDefined()) {
@@ -107,9 +114,6 @@ void RunTarget(int argc, char **argv, unsigned int pid, uint32_t timeout) {
     if (instrumentation->IsTargetFunctionDefined()) {
       printf("Target function returned normally\n");
       cur_iteration++;
-      if (cur_iteration == num_iterations) {
-        instrumentation->Kill();
-      }
     } else {
       FATAL("Unexpected status received from the debugger\n");
     }
@@ -159,15 +163,17 @@ int main(int argc, char **argv)
     instrumentation->GetCoverage(newcoverage, true);
 
     for (auto iter = newcoverage.begin(); iter != newcoverage.end(); iter++) {
-      printf("Found %zd new offsets in %s\n", iter->offsets.size(), iter->module_name);
+      printf("Found %zd new offsets in %s\n", iter->offsets.size(), iter->module_name.c_str());
     }
 
     instrumentation->IgnoreCoverage(newcoverage);
 
     MergeCoverage(coverage, newcoverage);
   }
-
+  
   if (outfile) WriteCoverage(coverage, outfile);
+
+  instrumentation->Kill();
 
   return 0;
 }

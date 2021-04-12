@@ -428,6 +428,8 @@ def cond_add_quotes(s):
       return '\"' + s + '\"'
    return s
     
+def escape_string(s):
+    return cond_add_quotes(s)    
 
 def escape_special_characters(s):
     """Add a backslash before characters that have special meanings in

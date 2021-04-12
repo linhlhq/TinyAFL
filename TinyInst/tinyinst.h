@@ -45,6 +45,14 @@ class TinyInst : public Debugger {
 public:
   virtual void Init(int argc, char **argv) override;
 
+  void EnableInstrumentation() {
+    instrumentation_disabled = false;
+  }
+
+  void DisableInstrumentation() {
+    instrumentation_disabled = true;
+  }
+
 protected:
 
   enum IndirectInstrumentation {
@@ -70,7 +78,7 @@ protected:
     ModuleInfo();
     void ClearInstrumentation();
 
-    char module_name[MAX_PATH];
+    std::string module_name;
     void *module_header;
     size_t min_address;
     size_t max_address;
@@ -147,7 +155,7 @@ protected:
 
   void CommitCode(ModuleInfo *module, size_t start_offset, size_t size);
 
-  ModuleInfo *GetModuleByName(char *name);
+  ModuleInfo *GetModuleByName(const char *name);
   ModuleInfo *GetModule(size_t address);
   ModuleInfo *GetModuleFromInstrumented(size_t address);
   AddressRange *GetRegion(ModuleInfo *module, size_t address);
@@ -270,6 +278,9 @@ private:
   // but the assumption for now is that there won't be too many of
   // them so a flat structure shoudl be ok for now
   std::list<CrossModuleLink> cross_module_links;
+
+  bool instrumentation_disabled;
+  bool instrument_modules_on_load;
 };
 
 #endif // TINYINST_H

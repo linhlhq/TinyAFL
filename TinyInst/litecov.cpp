@@ -91,11 +91,12 @@ void LiteCov::OnModuleInstrumented(ModuleInfo *module) {
                                         (uint64_t)module->instrumented_code_remote
                                           + module->instrumented_code_size,
                                         data->coverage_buffer_size,
-                                        READONLY);
+                                        READONLY, true);
 
   if (!data->coverage_buffer_remote) {
     FATAL("Could not allocate coverage buffer");
   }
+
 }
 
 void LiteCov::OnModuleUninstrumented(ModuleInfo *module) {
@@ -103,8 +104,9 @@ void LiteCov::OnModuleUninstrumented(ModuleInfo *module) {
 
   CollectCoverage(data);
 
-  if (data->coverage_buffer_remote) {
+  if (data->coverage_buffer_remote && IsTargetAlive()) {
     RemoteFree(data->coverage_buffer_remote, data->coverage_buffer_size);
+    data->coverage_buffer_remote = NULL;
   }
 
   data->ClearInstrumentationData();
@@ -305,7 +307,7 @@ void LiteCov::ClearCoverage() {
 
 // fetches and decodes coverage from the remote buffer
 void LiteCov::CollectCoverage(ModuleCovData *data) {
-  if (!IsTargetAlive() || !data->has_remote_coverage) return;
+  if (!data->has_remote_coverage) return;
 
   unsigned char *buf = (unsigned char *)malloc(data->coverage_buffer_next);
 
@@ -328,6 +330,7 @@ void LiteCov::CollectCoverage(ModuleCovData *data) {
   free(buf);
 
   ClearRemoteBuffer(data);
+  data->has_remote_coverage = false;
 }
 
 void LiteCov::CollectCoverage() {
@@ -367,7 +370,7 @@ void LiteCov::GetCoverage(Coverage &coverage, bool clear_coverage) {
 // sets (new) coverage to ignore
 void LiteCov::IgnoreCoverage(Coverage &coverage) {
   for (auto iter = coverage.begin(); iter != coverage.end(); iter++) {
-    ModuleInfo *module = GetModuleByName(iter->module_name);
+    ModuleInfo *module = GetModuleByName(iter->module_name.c_str());
     if (!module) continue;
     ModuleCovData *data = (ModuleCovData *)module->client_data;
 
@@ -400,10 +403,8 @@ bool LiteCov::HasNewCoverage() {
 }
 
 void LiteCov::OnProcessExit() {
+  CollectCoverage();
   TinyInst::OnProcessExit();
-  if (IsTargetAlive()) {
-    CollectCoverage();
-  }
 }
 
 uint64_t LiteCov::GetCmpCode(size_t bb_offset, size_t cmp_offset, int bits_match) {
@@ -634,7 +635,7 @@ TinyInst::InstructionResult LiteCov::InstrumentInstruction(ModuleInfo *module,
 
   size_t stack_offset = sp_offset;
 
-  olen = Push(&dstate, destination_reg, encoded);
+  olen = Push(&dstate, destination_reg, encoded, sizeof(encoded));
   WriteCode(module, encoded, olen);
 
   stack_offset += child_ptr_size;
@@ -709,10 +710,10 @@ TinyInst::InstructionResult LiteCov::InstrumentInstruction(ModuleInfo *module,
     WriteCode(module, encoded, olen);
   }
 
-  olen = Lzcnt(&dstate, operand_width, destination_reg, destination_reg, encoded);
+  olen = Lzcnt(&dstate, operand_width, destination_reg, destination_reg, encoded, sizeof(encoded));
   WriteCode(module, encoded, olen);
 
-  olen = CmpImm8(&dstate, operand_width, destination_reg, match_width, encoded);
+  olen = CmpImm8(&dstate, operand_width, destination_reg, match_width, encoded, sizeof(encoded));
   // check hat the offset is at the end
   if (*((char *)encoded + olen - 1) != match_width) {
     FATAL("Unexpected instruction encoding");
@@ -726,7 +727,7 @@ TinyInst::InstructionResult LiteCov::InstrumentInstruction(ModuleInfo *module,
 
   xed_reg_enum_t rip = XED_REG_INVALID;
   if (child_ptr_size == 8) rip = XED_REG_RIP;
-  olen = Mov(&dstate, 8, rip, 0x12345678, Get8BitRegister(destination_reg), encoded);
+  olen = Mov(&dstate, 8, rip, 0x12345678, Get8BitRegister(destination_reg), encoded, sizeof(encoded));
   // check hat the offset is at the end
   if (*((int32_t *)((char *)encoded + olen - 4)) != 0x12345678) {
     FATAL("Unexpected instruction encoding");
@@ -749,7 +750,7 @@ TinyInst::InstructionResult LiteCov::InstrumentInstruction(ModuleInfo *module,
   *(int32_t *)(module->instrumented_code_local + jmp_offset - 4) = 
     (int32_t)(module->instrumented_code_allocated - jmp_offset);
 
-  olen = Pop(&dstate, destination_reg, encoded);
+  olen = Pop(&dstate, destination_reg, encoded, sizeof(encoded));
   WriteCode(module, encoded, olen);
 
   if (sp_offset) {

@@ -34,6 +34,14 @@ END_LEGAL */
 #include "xed-operand-element-type-enum.h" // a generated file
 #include "xed-operand-storage.h" // a generated file
 
+typedef union {
+    xed_uint32_t i;
+    struct {
+        xed_uint8_t has_modrm;
+        xed_uint8_t has_disp;
+        xed_uint8_t has_imm;
+    } s;
+} xed_ild_vars_t;
 
 struct xed_encoder_vars_s;
 struct xed_decoder_vars_s;
@@ -75,7 +83,8 @@ typedef struct xed_decoded_inst_s  {
     union {
         /* user_data is available as a user data storage field after
          * decoding. It does not live across re-encodes or re-decodes. */
-        xed_uint64_t user_data; 
+        xed_uint64_t user_data;
+        xed_ild_vars_t ild_data;
 #if defined(XED_ENCODER)
         struct xed_encoder_vars_s* ev;
 #endif
@@ -84,7 +93,6 @@ typedef struct xed_decoded_inst_s  {
 } xed_decoded_inst_t;
 
 typedef xed_decoded_inst_t xed_operand_values_t;
-
 
 #endif
 

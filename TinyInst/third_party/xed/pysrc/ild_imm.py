@@ -27,24 +27,14 @@ import operand_storage
 
 _imm_token         = 'IMM_WIDTH'
 _ild_t_imm_member  = 'imm_width'
-
 _uimm1_nt          = 'UIMM8_1'
-
 _l3_header_fn      = 'xed-ild-imm-l3.h'
-_l3_c_fn           = 'xed-ild-imm-l3.c'
-
 _l2_header_fn      = 'xed-ild-imm-l2.h'
 _l1_header_fn      = 'xed-ild-imm-l1.h'
+_l3_c_fn           = 'xed-ild-imm-l3.c'
 _l2_c_fn           = 'xed-ild-imm-l2.c'
-
-_eosz_const_suffix = 'CONST'
-
 _imm0_fn           = 'xed_lookup_function_0_IMM_WIDTH_CONST_l2'
-
-_l1_header_fn      = 'xed-ild-imm-l1.h'
-
 _imm_lu_header_fn  = 'xed-ild-imm-bytes.h'
-
 
 
 def get_imm_nt_seq(ptrn_wrds, imm_nts):
@@ -70,18 +60,18 @@ def get_imm_nt_seq(ptrn_wrds, imm_nts):
 
 
 
-def get_all_imm_seq(united_lookup):
+def get_all_imm_seq(instr_by_map_opcode):
     """
-    @param united_lookup: lookup of ild_info.ild_info_t objects representing
+    @param instr_by_map_opcode: lookup of ild_info.ild_info_t objects representing
     current ISA. This lookup should have been built from storage+grammar
-    @type uinted_lookup: ild_info.ild_storage_t
+    @type instr_by_map_opcode: ild_info.ild_storage_t
     
     @return seq_list: list of all variations of IMM-binding NT sequences in
-    united_lookup.
+    instr_by_map_opcode.
     @type seq_list: [ [string] ]
     """
     all_seq = set()
-    infos = united_lookup.get_all_infos()
+    infos = instr_by_map_opcode.get_all_infos()
     for info in infos:
         #lists are unhashable, hence we have to use tuples instead
         all_seq.add(tuple(info.imm_nt_seq))
@@ -118,23 +108,27 @@ def get_l2_fn_from_info(info, imm_dict):
     is_const = ild_codegen.is_constant_l2_func(info.imm_nt_seq, imm_dict)
     
     if is_const:
-        l2_fn = ild_codegen.get_l2_fn(info.imm_nt_seq, _imm_token, [], None,
-              _imm0_fn, True)
+        l2_fn = ild_codegen.get_l2_fn(info.imm_nt_seq,
+                                      _imm_token,
+                                      [],
+                                      None,
+                                      _imm0_fn,
+                                      True)
     else:
-        l2_fn = ild_codegen.get_l2_fn(info.imm_nt_seq, _imm_token, 
+        l2_fn = ild_codegen.get_l2_fn(info.imm_nt_seq,
+                                      _imm_token, 
                                       info.eosz_nt_seq,
                                       ild_eosz.get_target_opname(),
-                                      _imm0_fn, False)
+                                      _imm0_fn,
+                                      False)
     return l2_fn
   
 
 
 def _gen_imm0_function(agi):
-    """
-    for patterns that don't set IMM_WIDTH token
-    these patterns have has_im==0
-    and we define a L2 lookup function that returns 0
-    """
+    """for patterns that don't set IMM_WIDTH token these patterns have
+    has_imm==0p and we define a L2 lookup function that returns 0"""
+    
     #return_type = operand_storage.get_ctype(_imm_token)
     return_type = 'void'
     fo = codegen.function_object_t(_imm0_fn, return_type,
@@ -212,11 +206,11 @@ _resolution_functions = [
 #these are for second immediate guys.
 #It also happens that AMD second immediate guys define uneasy conflicts
 #so we are killing two birds with one stone 
-harcoded_res_functions = {
-                     #(map, opcode)    L1_function_name 
-                    ('0x0F', '0x78') : 'xed_ild_hasimm_map0x0F_op0x78_l1',
-                    ('0x0', '0xc8') : 'xed_ild_hasimm_map0x0_op0xc8_l1'
-                         }
+_hardcoded_res_functions_imm = {
+    #(map, opcode)          :  L1_function_name 
+    ('legacy_map1', '0x78') : 'xed_ild_hasimm_map0x0F_op0x78_l1',
+    ('legacy_map0', '0xc8') : 'xed_ild_hasimm_map0x0_op0xc8_l1'
+}
 
 def _resolve_conflicts(agi, info_list, imm_dict):
     """Try to resolve conflicts by applying the conflict resolution
@@ -243,30 +237,30 @@ def _resolve_conflicts(agi, info_list, imm_dict):
             return fo
     return None
 
-def gen_l1_functions_and_lookup(agi, united_lookup, imm_dict):
+def gen_l1_functions_and_lookup(agi, instr_by_map_opcode, imm_dict):
     """Compute L1(conflict resolution) functions list and imm_bytes 
     lookup tables dict.
     @param agi: all generators info
     
-    @param united_lookup: the 2D lookup by map-opcode to info objects list.
-    united_lookup['0x0']['0x78'] == [ild_info1, ild_info2, ... ]
-    @type united_lookup: 
+    @param instr_by_map_opcode: the 2D lookup by map-opcode to info objects list.
+    instr_by_map_opcode['0x0']['0x78'] == [ild_info1, ild_info2, ... ]
+    @type instr_by_map_opcode: 
     {string(insn_map) : {string(opcode): [ild_info.ild_info_t]} }
     
     
     """
     l1_resolution_fos = []
     l1_lookup = {}
-    for insn_map in ild_info.get_dump_maps():
+    for insn_map in ild_info.get_dump_maps_imm(agi):
         l1_lookup[insn_map] = {}
         for opcode in range(0, 256):
             #look in the hard-coded resolution functions
             #they are manually written for the two-immediates instructions
-            if (insn_map, hex(opcode)) in harcoded_res_functions:
-                l1_fn = harcoded_res_functions[(insn_map, hex(opcode))]
+            if (insn_map, hex(opcode)) in _hardcoded_res_functions_imm:
+                l1_fn = _hardcoded_res_functions_imm[(insn_map, hex(opcode))]
                 l1_lookup[insn_map][hex(opcode)] = l1_fn
                 continue
-            info_list = united_lookup.get_info_list(insn_map, hex(opcode))
+            info_list = instr_by_map_opcode.get_info_list(insn_map, hex(opcode))
             #get only info objects with minimum priority
             info_list = ild_info.get_min_prio_list(info_list)
             is_conflict = _is_imm_conflict(info_list, imm_dict)
@@ -284,7 +278,7 @@ def gen_l1_functions_and_lookup(agi, united_lookup, imm_dict):
             #this will happen for opcodes like 0F in 0F map - totally illegal
             #opcodes, that should never be looked up in runtime.
             elif len(info_list) == 0:
-                l1_fn = '(%s)0' % (ildutil.l1_ptr_typename)
+                l1_fn = _imm0_fn
             else:
                 #there are no conflicts, we can use L2 function as L1
                 info = info_list[0]
@@ -299,11 +293,9 @@ def _filter_uimm1_nt(imm_nt_names):
     return list(filter(lambda x: x!=_uimm1_nt, imm_nt_names))
 
        
-def work(agi, united_lookup, imm_nts, ild_gendir, eosz_dict, 
+def work(agi, instr_by_map_opcode, imm_nts, ild_gendir, eosz_dict, 
          debug):
-    """
-    main entry point of the module.
-    """
+    """main entry point of the module."""
     #dump lookup functions for each NT
     #Let's call these function Level3 functions (L3)
     nt_dict = {}
@@ -334,7 +326,7 @@ def work(agi, united_lookup, imm_nts, ild_gendir, eosz_dict,
     #get all IMM NT sequences that are used in patterns
     #The only case of IMM sequence is when we have UIMM1() NT - the second
     #immediate NT.    
-    all_imm_seq = get_all_imm_seq(united_lookup)
+    all_imm_seq = get_all_imm_seq(instr_by_map_opcode)
     debug.write('IMM SEQS: %s\n' % all_imm_seq)
 
     # L2 / Level2 functions: set imm_width
@@ -352,9 +344,10 @@ def work(agi, united_lookup, imm_nts, ild_gendir, eosz_dict,
     #append function for imm_bytes==0
     l2_functions.append(_gen_imm0_function(agi))
     
-    l2_headers = [ild_eosz.get_ntseq_header_fn(),
-                  _l3_header_fn, ildutil.ild_header,
-                  operand_storage.get_operand_accessors_fn()]
+    l2_headers = [ ild_eosz.get_ntseq_header_fn(),
+                   _l3_header_fn,
+                   ildutil.ild_header,
+                   operand_storage.get_operand_accessors_fn() ]
     ild_codegen.dump_flist_2_header(agi, _l2_header_fn, l2_headers, 
                                     l2_functions)
 
@@ -365,21 +358,25 @@ def work(agi, united_lookup, imm_nts, ild_gendir, eosz_dict,
     # These functions will be the value of map,opcode lookup tables.
     
     # These functions should be dumped after we have a look on the
-    # united_lookup mapping in order to know what conflicts exist and
+    # instr_by_map_opcode mapping in order to know what conflicts exist and
     # for each conflict to create a resolution lookup table.
     
     # L1 functions are defined by a list of ild_info_t objects that
     # have same map,opcode.
-    res = gen_l1_functions_and_lookup(agi, united_lookup, nt_dict)
-
-    l1_functions,l1_lookup = res
+    l1_functions,l1_lookup = gen_l1_functions_and_lookup(agi,
+                                                         instr_by_map_opcode,
+                                                         nt_dict)
 
     ild_codegen.dump_flist_2_header(agi, _l1_header_fn, [_l2_header_fn], 
                                     l1_functions)
     
-    headers = [_l1_header_fn, ildutil.ild_private_header, 
-               operand_storage.get_operand_accessors_fn()]
-    ild_codegen.dump_lookup(agi, l1_lookup, _ild_t_imm_member, 
-                            _imm_lu_header_fn, headers, 
-                            ildutil.l1_ptr_typename)
+    headers = [ _l1_header_fn,
+                ildutil.ild_private_header, 
+                operand_storage.get_operand_accessors_fn() ]
+    ild_codegen.dump_lookup_new(agi,
+                                l1_lookup,
+                                _ild_t_imm_member, 
+                                _imm_lu_header_fn,
+                                headers, 
+                                ildutil.l1_ptr_typename)
 

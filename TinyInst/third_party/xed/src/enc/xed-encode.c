@@ -24,6 +24,7 @@ END_LEGAL */
 #include "xed-encode-private.h"
 #include "xed-operand-accessors.h"
 #include "xed-reg-class.h"
+#include "xed-ild-enum.h"
 
 #include "xed-encoder.h" // a generated file of prototypes
 #include <string.h>  // memset
@@ -31,49 +32,6 @@ END_LEGAL */
 //xed_encode_nonterminal_ISA_ENCODE(xed_encoder_request_t& xes);
 
 
-
-// Emitting the legacy map bytes.
-// Need to convert from xed_ild_map_enum_t to the actual bytes.
-// called from generated code (in OBJDIR/xed-enc-patterns.c)
-void xed_encoder_request_emit_legacy_map(xed_encoder_request_t* q)
-{
-    xed_uint8_t bits;
-    xed_uint16_t value;
-    xed_ild_map_enum_t map;
-    map = XED_STATIC_CAST(xed_ild_map_enum_t,xed_encoder_get_map(q));
-
-    switch(map) {
-    case XED_ILD_MAP0:
-      // FIXME: this case is also used to avoid emitting anything for VEX/EVEX/XOP maps
-      return;
-      
-    case XED_ILD_MAP1:
-      value = 0x0F;
-      bits = 8;
-      break;
-      
-    case XED_ILD_MAP2:
-      value = 0x380F; //need to convert big to little endian
-      bits = 16;
-      break;
-      
-    case XED_ILD_MAP3:
-      value = 0x3A0F; //need to convert big to little endian
-      bits = 16;
-      break;
-      
-    case XED_ILD_MAPAMD:
-      value = 0x0F0F;
-      bits = 16;
-      break;
-      
-    default:
-      xed3_operand_set_error(q,XED_ERROR_GENERAL_ERROR);
-      return;
-    
-    } 
-    xed_encoder_request_emit_bytes(q,bits,value);
-}
 
 void xed_encoder_request_emit_bytes(xed_encoder_request_t* q,
                                    const xed_uint8_t bits,
@@ -517,7 +475,7 @@ static void xed_encode_precondition_vl(xed_encoder_request_t* req)
         set_vl(r,&vl);  
 
         // set VL based on REG any operands
-        for (i=XED_OPERAND_REG0;i<=XED_OPERAND_REG8;i++)
+        for (i=XED_OPERAND_REG0;i<=XED_OPERAND_REG9;i++)
         {
             xed3_get_generic_operand(req, i, &r);
             if (r == XED_REG_INVALID)

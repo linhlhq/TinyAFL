@@ -64,6 +64,7 @@ import copy
 import glob
 import re
 import optparse
+import collections
 
 def find_dir(d):
     directory = os.getcwd()
@@ -577,23 +578,6 @@ def pad_pattern(pattern):
       pattern +=  '-' * rem
    return pattern
 
-def read_dict_spec(fn): # FIXME: 2019-10-18: no longer used
-    """Read a file with expected format of a form
-    {KEY VALUE\n}, return a dict of dict[KEY] == VALUE """
-    res_dict = {}
-    if not os.path.exists(fn):
-      die("Could not read file: " + fn)
-    lines = open(fn,'r').readlines()
-    lines = map(no_comments, lines)
-    lines = list(filter(genutil.blank_line, lines))
-    for line in lines:
-        wrds = line.split()
-        key = wrds[0]
-        value = wrds[1]
-        #convert straight to int
-        res_dict[key] = int(value)
-    return res_dict
-
 
 
 def read_state_spec(fn):
@@ -625,10 +609,9 @@ def compute_state_space(state_dict):
    """Figure out all the values for each token, return a dictionary
    indexed by token name"""
 
-   # a dictionary of the values of a each operand_decider
-   state_values = {}
+   state_values = collections.defaultdict(set)
    
-   for k in list(state_dict.keys()):
+   for k in state_dict.keys():
       vals = state_dict[k]
       for wrd in vals.list_of_str:
          m = restriction_pattern.search(wrd)
@@ -636,16 +619,8 @@ def compute_state_space(state_dict):
             (token,test,requirement) = m.groups([0,1,2])
             if requirement == 'XED_ERROR_GENERAL_ERROR':
                 continue
-            #if type(requirement) == types.IntType:
-            #    die("Already an integer")
             requirement_base10 = make_numeric(requirement,wrd)
-            #msge("STATE RESTRICTION PATTERN " + token + " :  " + 
-            #     str(requirement) + " -> " + str(requirement_base10))
-            if token in state_values:
-               if requirement_base10 not in state_values[token]:
-                  state_values[token].append(requirement_base10)
-            else:
-               state_values[token] = [ requirement_base10 ]
+            state_values[token].add(requirement_base10)
          elif formal_binary_pattern.match(wrd):
             pass # ignore these
          elif nonterminal_pattern.match(wrd):
@@ -654,8 +629,11 @@ def compute_state_space(state_dict):
             pass # ignore these
          else:
             die("Unhandled state pattern: %s" % wrd)
-                              
-   return state_values
+
+   output = {}
+   for k,v in state_values.items():
+       output[k]=list(v)
+   return output
          
 
 ############################################################################
@@ -1345,7 +1323,7 @@ class instruction_info_t(partitionable_info_t):
       if reached_closing_bracket:
          if found_operands == False:
             die("Did not find operands for " + self.iclass)
-         for k in  list(structured_input_dict.keys()):
+         for k in  structured_input_dict.keys():
             if structured_input_dict[k] == False:
                if structured_input_tags[k]:
                   die("Required token missing: "+ k)
@@ -3105,18 +3083,21 @@ def collect_attributes(options, node,  master_list):
 
 
 idata_files = 0
-def write_instruction_data(odir,idata_dict):
+def write_instruction_data(agi, idata_dict):
    """Write a file containing the content of the idata_dict. The keys
    are iclass:extension the values are (iclass, extension, category). This
    appends to the file if we've already opened this."""
    global idata_files
-   fn = 'idata.txt'
-   if idata_files == 0:
-      open_mode = "w"
-   else:
-      open_mode = "a"
    idata_files += 1
-   f = open(os.path.join(odir,fn),open_mode)
+   if idata_files > 1:
+       die("Not handled: appending ot idata.txt file")
+           
+   fe = xed_file_emitter_t(agi.common.options.xeddir, 
+                           agi.common.options.gendir, 
+                           'idata.txt', 
+                           shell_file=True)
+   fe.start(full_header=False)
+   
    kys = list(idata_dict.keys())
    kys.sort()
    s = "#%-19s %-15s %-15s %-30s %-20s %s\n" % ("iclass", 
@@ -3125,7 +3106,7 @@ def write_instruction_data(odir,idata_dict):
                                                 "iform", 
                                                 "isa_set",
                                                 'attributes')
-   f.write(s)
+   fe.write(s)
    for iform in kys:
       (iclass,extension,category,isa_set, plist, 
                               iclass_string_index) = idata_dict[iform]
@@ -3139,8 +3120,8 @@ def write_instruction_data(odir,idata_dict):
                                                   iform, 
                                                   isa_set,
                                                   attributes)
-      f.write(s)
-   f.close()
+      fe.write(s)
+   fe.close()
    
 def attr_dict_keyfn(a):
     return a[0]
@@ -3216,7 +3197,7 @@ def write_quick_iform_map(agi,odir,idata_dict):
       qual_category = "XED_CATEGORY_%s" % (category.upper())
       qual_extension = "XED_EXTENSION_%s" % (extension.upper())
       qual_isa_set = "XED_ISA_SET_%s" % (isa_set.upper())
-      t = '/* %29s */ {  (xed_uint16_t) %25s, (xed_uint8_t) %22s, (xed_uint8_t)%20s, (xed_uint8_t)%25s, (xed_uint16_t)%4d }' % \
+      t = '/* %29s */ {  (xed_uint16_t) %25s, (xed_uint8_t) %22s, (xed_uint8_t)%20s, (xed_uint16_t)%25s, (xed_uint16_t)%4d }' % \
             (iform, 
              qual_iclass, 
              qual_category, 
@@ -3479,16 +3460,15 @@ def emit_attributes_table(agi, attributes):
    cfp.write('\n};\n')
    cfp.close()
 
-
-
+   
 def emit_enum_info(agi):
    """Emit major enumerations based on stuff we collected from the
    graph."""
    msge('emit_enum_info')
    # make everything uppercase
-   nonterminals = [  s.upper() for s in list(agi.nonterminal_dict.keys())]
-   operand_types = [ s.upper() for s in list(agi.operand_types.keys())]
-   operand_widths = [ s.upper() for s in list(agi.operand_widths.keys())]
+   nonterminals = [  s.upper() for s in agi.nonterminal_dict.keys()]
+   operand_types = [ s.upper() for s in agi.operand_types.keys()]
+   operand_widths = [ s.upper() for s in agi.operand_widths.keys()]
 
    operand_names = [ s.upper() for s in 
                      list(agi.operand_storage.get_operands().keys()) ]
@@ -3526,7 +3506,7 @@ def emit_enum_info(agi):
    #nt_enum_numeric_value -> nt_name
    xed3_nt_enum_val_map = {}
    upper_dict = {}
-   for nt_name in list(agi.nonterminal_dict.keys()):
+   for nt_name in agi.nonterminal_dict.keys():
        nt_name_upper = nt_name.upper()
        upper_dict[nt_name_upper] = nt_name 
    for i,upper_nt in enumerate(nonterminals):
@@ -3561,7 +3541,7 @@ def emit_enum_info(agi):
       attributes_list.extend(attributes)
    if lena > 128:
       die("Exceeded 128 attributes. " +
-          " The SDE/XED team needs to add support for more." +
+          " The XED dev team needs to add support for more." +
           " Please report this error.")
    global max_attributes
    max_attributes= lena
@@ -3657,13 +3637,7 @@ def compute_iform(options,ii, operand_storage_dict):
             msge("IFORM SKIPPING SUPPRESSED %s" % (operand.name))
 
       elif operand.type == 'nt_lookup_fn':
-         s = operand.lookupfn_name # .upper()
-         s = re.sub(r'_SB','',s) 
-         s = re.sub(r'_SR','',s) 
-         s = re.sub(r'_EB','',s) # order counts _EB before _B
-         s = re.sub(r'_[RBNEI].*','',s)
-         s = re.sub(r'_DREX','',s) # AMD SSE5
-         s = re.sub(r'_SE','',s)
+         s = operand.lookupfn_name_base 
          if operand.oc2 and s not in ['X87'] :
             if operand.oc2 == 'v' and s[-1] == 'v': 
                pass # avoid duplicate v's
@@ -4005,7 +3979,7 @@ def find_common_operand_sequences(agi):
 
     msgb("Unique Operand Sequences", str(next_oid_seqeuence))
     n = 0
-    for k in list(global_oid_sequences.keys()):
+    for k in global_oid_sequences.keys():
         n = n + len(k.lst)
     global_max_operand_sequences = n
     msgb("Number of required operand sequence pointers", 
@@ -4326,7 +4300,7 @@ def compress_iform_strings(values):
                                                             len(bases),
                                                             len(operand_sigs)))
 
-    if len(h) != (max( [ int(x) for x in list(h.keys())] )+1):
+    if len(h) != (max( [ int(x) for x in h.keys() ] )+1):
         print("PROBLEM IN h LENGTH")
     # make an numerically indexed version of the bases table
     bi = {}
@@ -4569,7 +4543,7 @@ def merge_child_nodes(options,node):
    # more "next" nodes.
    tnode = {}
    for k,child in node.next.items():      # children  # MERGING 
-      for j in list(child.next.keys()):  # grandchildren
+      for j in child.next.keys():  # grandchildren
          bigkey = str(k) + str(j)
          if vmerge():
             msge("Bigkey= %s"  % (bigkey))
@@ -4760,7 +4734,7 @@ def print_bit_groups(bit_groups, s=''):
 def emit_function_headers(fp, fo_dict):
    """For each function in the fo_dict dictionary, emit the function
    prototype to the fp file emitter object."""
-   for fname in list(fo_dict.keys()):
+   for fname in fo_dict.keys():
       fo = fo_dict[fname]
       fp.write(fo.emit_header())
       
@@ -4883,7 +4857,10 @@ class generator_common_t(object):
 
       self.inst_table_file_names = []
 
-   
+   def get_state_space_values(self,od_token):
+       '''return the list of values associated with this token'''
+       return self.state_space[od_token]
+      
    def open_file(self,fn, arg_shell_file=False, start=True):
       'open and record the file pointers'
 
@@ -5175,13 +5152,14 @@ class all_generator_info_t(object):
       return g
 
 
-   def open_file(self, fn, keeper=True, arg_shell_file=False, start=True):
+   def open_file(self, fn, keeper=True, arg_shell_file=False, start=True, private=True):
       'open and record the file pointers'
 
       fp = xed_file_emitter_t(self.common.options.xeddir,
                               self.common.options.gendir,
                               fn,
-                              shell_file=arg_shell_file)
+                              shell_file=arg_shell_file,
+                              is_private=private)
       if keeper:
           self.add_file_name(fp.full_file_name, is_header(fn))
 
@@ -5291,7 +5269,7 @@ class all_generator_info_t(object):
          
    def extend_operand_names_with_input_states(self):
       type ='xed_uint32_t'
-      for operand_decider in list(self.common.state_space.keys()):
+      for operand_decider in self.common.state_space.keys():
          #msge("STATESPACE: considering " + operand_decider)
          if operand_decider not in self.operand_names:
             self.operand_names[operand_decider] = type
@@ -5542,7 +5520,7 @@ def gen_everything_else(agi):
     agi.isa_sets = collect_isa_sets(agi)
     
     # idata.txt file write
-    write_instruction_data(agi.common.options.gendir,agi.iform_info)
+    write_instruction_data(agi, agi.iform_info)
     write_quick_iform_map(agi,agi.common.options.gendir,agi.iform_info)
     
     print_resource_usage('everything.4b')
@@ -5738,7 +5716,7 @@ def make_cpuid_mappings(agi,mappings):
 
     # check that each isa set in the cpuid files has a corresponding XED_ISA_SET_ value
     fail = False
-    for cisa in list(mappings.keys()):
+    for cisa in mappings.keys():
         t = re.sub('XED_ISA_SET_','',cisa)
         if t not in agi.all_enums['xed_isa_set_enum_t']:
             fail = True
@@ -6337,7 +6315,8 @@ def main():
    # emit functions to identify AVX and AVX512 instruction groups
    classifier.work(agi) 
    ild.work(agi)
-
+   map_info_rdr.emit_enums(agi)
+   
    gen_cpuid_map(agi)
    agi.close_output_files()
    agi.dump_generated_files()

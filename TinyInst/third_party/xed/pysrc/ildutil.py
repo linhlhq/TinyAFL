@@ -36,21 +36,17 @@ xed_strings = {'key_str'      : 'key',
 ild_c_type          = 'xed_decoded_inst_t*'
 ild_c_op_type       = 'xed_bits_t'
 
-# ild and xed3_nt
+# ild and dec_dyn
 ild_header          = 'xed-ild.h'
 # ild
 ild_private_header  = 'xed-ild-private.h'
 
-#ild
+#ild_imm, ild_eosz, ild_easz, ild_disp
 l1_ptr_typename     = 'xed_ild_l1_func_t'
 
-# xed3_nt
+# dec_dyn
 xed3_decoded_inst_t = 'xed_decoded_inst_t'
 xed3_operand_t      = 'xed_operand_values_t'
-
-# ild
-#FIXME: get mod_space from generator
-mode_space          = [0,1,2]
 
 def ild_err(msg):
     genutil.die("ILD_PARSER ERROR: %s\n" % (msg))

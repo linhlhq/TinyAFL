@@ -183,7 +183,7 @@ class env_t(object):
     def __getitem__(self,k):
         """Read the environment dictionary. Not doing any
         substitutions."""
-        #return self.env[k]
+
         try:
             return self.env[k]
         except:
@@ -437,7 +437,14 @@ class env_t(object):
         self.env['AS'] = ''
         self.env['RANLIB'] = ''
 
-        self.env['uname'] = platform.uname()
+        # python3.9 breaks copy.deepcopy() of platform.uname() return
+        # values so we make our own.
+        self.env['uname'] = ( platform.system(),
+                              platform.node(),
+                              platform.release(),
+                              platform.version(),
+                              platform.machine() )
+            
         self.env['hostname'] = platform.node()
         self.env['system'] = platform.system() # sort of like build_os
         
@@ -1228,6 +1235,8 @@ class env_t(object):
             return 'x86-64'
         elif name[0:3] == 'x86':
             return 'ia32'
+        elif name == 'aarch64':
+            return 'aarch64'
         else:
             die("Unknown cpu " + name)
 
@@ -1641,12 +1650,9 @@ class env_t(object):
         self._add_default_builders()
         self._add_default_builder_templates()
 
-    def escape_string(self,s):
-        if self.on_windows():
-            return util.cond_add_quotes(s)
-        else:
-            t = s.replace(' ','\ ')
-            return t
+    def escape_string(self,s): 
+        return util.escape_string(s)
+    
     def _escape_list_of_strings(self,sl):
         n = []
         for s in sl:

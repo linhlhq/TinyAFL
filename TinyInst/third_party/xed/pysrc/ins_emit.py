@@ -67,10 +67,9 @@ class instructions_group_t(object):
         '''
     
     def __init__(self,iarray,log_dir):
-        self.groups = []
         self.iclass2group = {}
         self.log_name = 'groups_log.txt'
-        self._join_iclasses_to_groups(iarray,log_dir)
+        self.groups = self._join_iclasses_to_groups(iarray,log_dir)
         
     def _group_good_for_iclass(self,group,iforms):
         ''' Check if the incoming group represents the list of iforms.
@@ -123,9 +122,10 @@ class instructions_group_t(object):
             1. dividing the iclasses into groups.
             2. creating a mapping from iclass to its group Id.
             3. generating a log
+
+            iarray is a dict[iclass] = [iform_t, ...]
             
             return: a list of ins_group_t objects '''
-        
         
         groups = []
         #1. generate the groups
@@ -153,7 +153,8 @@ class instructions_group_t(object):
                 df.write("\n\n")
 
             df.close()     
-        self.groups = groups
+        return groups
+        
     
     def get_groups(self):
         ''' return the groups list ''' 
@@ -176,20 +177,28 @@ class instructions_group_t(object):
                 d[iclass] = i
         
         return d
-        
+
+def iforms_sort(lst):
+    lst.sort(key=key_iform_by_bind_ptrn)
+    lst.sort(key=key_rule_length)
+    lst.sort(key=key_priority)
+
+    
 class ins_group_t(object):
     ''' This class represents one group.
         it holds the list of iclasses that have the same bind patterns.   
     '''
     
     def __init__(self):
-        ''' params:
-            1. iclass2iforms: mapping from iclass to a list of iforms
-            2.iforms: list of iform_t objects  
-        '''
         
+        # iclass2iforms is a mapping from iclass string to a list of iform_t
         self.iclass2iforms = {}
+        
+        #  the iforms field is really the iforms of the first iclass
+        #  to be added to the group.
         self.iforms = []
+        
+        self.iclasses = None # instantiated when we call sort()
         
     def add_iclass(self,iclass,iforms):
         ''' add the iclass and iforms list to the group '''
@@ -200,38 +209,77 @@ class ins_group_t(object):
         
     def get_iclasses(self):
         ''' return a list of iclasses in the group'''
-        return list(self.iclass2iforms.keys())     
+        return list(self.iclass2iforms.keys())
+
+    def get_ith_iforms(self, i):
+        '''return  the ith iform in for each iclass'''
+        lst = []
+        for ifl in self.iclass2iforms.values():
+            lst.append(ifl[i])
+        return lst
     
-    def get_iform_ids_table(self):
+    def get_ith_field(self, i, field):
+        '''return a list of the specified field from each iform'''
+        lst = []
+        for ifl in self.iclass2iforms.values():
+            lst.append(getattr(ifl[i],field))
+        return lst
+
+
+    def sort(self):
+        '''call this before generating code to make sure all agree on order'''
+        self.iclasses = sorted(self.get_iclasses())
+        for iclass in self.iclasses:
+            iforms_sort( self.iclass2iforms[iclass] )
+        # this should be sorted by one of the above since it is just a
+        # ref to the first list in group...
+        # iforms_sort(self.iforms)
+    
+    def gen_iform_ids_table(self):
         ''' generate C style table of iform Id's.
             the table is 2D. one row per iclass.
             the columns are the different iform Ids '''
         
         table = []
-        iclasses = sorted(self.get_iclasses())
-        for iclass in iclasses:
-            values = ''
-            iforms_sorted_by_length = self.iclass2iforms[iclass]
-
-            # This determines the order in which encoding options are
-            # evaluated by the encoder.
-            iforms_sorted_by_length.sort(key=key_iform_by_bind_ptrn)
-            iforms_sorted_by_length.sort(key=key_rule_length)
-            iforms_sorted_by_length.sort(key=key_priority)
-            
-            for iform in iforms_sorted_by_length:
-                values += '{:4},'.format(iform.rule.iform_id)
-            line = "/*{:14}*/    {{{}}},".format(iclass,values)
+        for iclass in self.iclasses:
+            values = []
+            for iform in self.iclass2iforms[iclass]:
+                values.append('{:4}'.format(iform.rule.iform_id))
+            line = "/*{:14}*/ {{{}}},".format(iclass, ",".join(values))
             table.extend([ line ])
             
         return table
+    
+    def gen_iform_isa_set_table(self, isa_set_db_for_chip):
+        '''generate C style table of isa_set info.  The table is 2D. one row
+            per iclass.  the columns are the isa_set for that
+            iform. The values all_ones and all_zeros are optimizations
+            to reduce the amount of encoder code. '''
+        
+        table = []
+        all_ones =  True
+        all_zeros = True
+        for iclass in self.iclasses:
+            values = []
+            for iform in self.iclass2iforms[iclass]:
+                #s = 'XED_ISA_SET_{}'.format(iform.isa_set.upper())
+                s = '1' if iform.isa_set.upper() in isa_set_db_for_chip else '0'
+                if s == '0':
+                    all_ones = False
+                else:
+                    all_zeros = False
+                values.append(s)
+            line = "/*{:14}*/ {{{}}},".format(iclass, ",".join(values))
+            table.extend([ line ])
+            
+        return table, all_ones, all_zeros
 
     
 class instruction_codegen_t(object):
     def __init__(self,iform_list,iarray,logs_dir, amd_enabled=True):
         self.amd_enabled = amd_enabled
         self.iform_list = iform_list
-        self.iarray = iarray
+        self.iarray = iarray # dictionary by iclass of [ iform_t ]
         self.logs_dir = logs_dir #directory for the log file
         
         #list of field binding function_object_t
@@ -266,7 +314,19 @@ class instruction_codegen_t(object):
         
         encoder_config.ins_groups = self.instruction_groups
         
-         
+    def _emit_legacy_map(self, fo, iform):
+        # obj_str is the function parameters for the emit function
+        def _xemit(bits, v):
+            fo.add_code_eol('xed_encoder_request_emit_bytes({},{},0x{:02x})'.format(
+                encutil.enc_strings['obj_str'], bits, v))
+
+        if iform.legacy_map.legacy_escape != 'N/A':
+            bits = 8
+            _xemit(bits, iform.legacy_map.legacy_escape_int)
+            if iform.legacy_map.legacy_opcode != 'N/A':
+                _xemit(bits, iform.legacy_map.legacy_opcode_int)
+
+                
     def _make_emit_fo(self, iform, i):
         ''' create the function object for this emit pattern
              
@@ -291,13 +351,17 @@ class instruction_codegen_t(object):
             # for VEX/EVEX/XOP instr (see
             # _identify_map_and_nominal_opcode() ) to avoid emitting
             # any escape/map bytes at runtime.
-
-            # FIXME: We could avoid ths call to emit legacy map for
-            # non-legacy stuff and speed up encoder slightly.
-            if action.field_name and action.field_name == 'MAP':
-                emit_map = 'xed_encoder_request_emit_legacy_map'
-                code = "    %s(%s)" % (emit_map,obj_str)
-                fo.add_code_eol(code)
+            if action.field_name == 'MAP':
+                if iform.encspace == 0: # legacy
+                    genutil.die("Should not see MAP here: {}".format(iform.iclass))
+                pass
+            elif action.field_name and action.field_name in ['LEGACY_MAP1',
+                                                             'LEGACY_MAP2',
+                                                             'LEGACY_MAP3',
+                                                             'LEGACY_MAP3DNOW']:
+                if iform.encspace != 0: # legacy
+                    genutil.die("This should only occur for legacy instr")
+                self._emit_legacy_map(fo, iform)
                     
             elif action.field_name and action.field_name == 'NOM_OPCODE':
                 code = ''
@@ -452,22 +516,7 @@ class instruction_codegen_t(object):
     
         return fo_list
 
-    def _compute_map(self, first_byte, second_byte=None):
-        if first_byte != 0x0F:
-            return 'XED_ILD_MAP0'
-        else:
-            if second_byte == None:
-                return 'XED_ILD_MAP1'
-            if second_byte == 0x38:
-                return 'XED_ILD_MAP2'
-            if second_byte == 0x3A:
-                return 'XED_ILD_MAP3'
-            if second_byte == 0x0F and self.amd_enabled:
-                return 'XED_ILD_MAPAMD'
 
-        die("Unhandled escape {} / map {} bytes".format(first_byte, second_byte))
-    
-    
     def _identify_map_and_nominal_opcode(self,iform):
         ''' scan the list of actions and identify the nominal opcode and 
             the legacy map.
@@ -509,33 +558,19 @@ class instruction_codegen_t(object):
             genutil.die("This should not happen")
 
         first =  iform.rule.actions[first_naked_bits_index]
+        ### FIXME:2020-04-17 rewrite the rest of this to be generic
+        ### and use dyanmic map information to guide execution.
         if vv:
             # all VEX/EVEX/XOP instr have an explicit map
             
-            # disabled this (and later code) because of MAP0
-            # hack to avoid emitting legacy escapes
-            if 0: 
-                mapno = 0
-                for action in iform.rule.actions:
-                    if action.is_field_binding() and action.field_name == 'MAP':
-                        mapno = action.int_value
-                        break
             #this action represents the opcode
             iform.nominal_opcode = first.int_value
             iform.nom_opcode_bits = first.nbits
-            iform.map = 'XED_ILD_MAP0' # this is used to avoid emitting legacy escapes
-            # see above "disabled" comment
-            if 0:
-                if mapno < 8:
-                    iform.map = 'XED_ILD_MAP{}'.format(mapno)
-                else:
-                    iform.map = 'XED_ILD_MAP_XOP{}'.format(hex(mapno)[-1].upper())
             iform.rule.actions[i] = actions.dummy_emit(first,'NOM_OPCODE') # replace opcode
-        elif first.int_value != 0x0F:
+        elif first.int_value != 0x0F:  # map 0
             #this action represents the opcode
             iform.nominal_opcode = first.int_value
             iform.nom_opcode_bits = first.nbits
-            iform.map = self._compute_map(first.int_value)
             iform.rule.actions[i] = actions.dummy_emit(first,'NOM_OPCODE') # replace opcode
         
         else: #first byte == 0x0F and we are legacy space
@@ -554,10 +589,9 @@ class instruction_codegen_t(object):
                 amd3dnow_opcode_action = iform.rule.actions[-1]
                 iform.nominal_opcode = amd3dnow_opcode_action.int_value
                 iform.nom_opcode_bits = 8
-                iform.map = self._compute_map(first.int_value, second.int_value)
                 iform.rule.actions[-1] = actions.dummy_emit(amd3dnow_opcode_action,
                                                             'NOM_OPCODE')
-                iform.rule.actions[i] = actions.dummy_emit(first,'MAP')  # replace first 0xF
+                iform.rule.actions[i] = actions.dummy_emit(first,'LEGACY_MAP3DNOW')  # replace first 0xF
                 # the second 0x0F byte that describes the map is not needed, remove it
                 iform.rule.actions.remove(second)
                 
@@ -572,8 +606,11 @@ class instruction_codegen_t(object):
                 
                 iform.nominal_opcode = third.int_value
                 iform.nom_opcode_bits = third.nbits
-                iform.map = self._compute_map(first.int_value, second.int_value)
-                iform.rule.actions[i+1] = actions.dummy_emit(second,'MAP') # replace the 0x38 or 0x3A
+                if second.int_value==0x38:
+                    xmap  = 'LEGACY_MAP2'
+                else:
+                    xmap  = 'LEGACY_MAP3'
+                iform.rule.actions[i+1] = actions.dummy_emit(second,xmap) # replace the 0x38 or 0x3A
                 iform.rule.actions[i+2] = actions.dummy_emit(third,
                                                              'NOM_OPCODE')  # replace opcode
                 iform.rule.actions.remove(first) # remove the 0x0F
@@ -581,8 +618,7 @@ class instruction_codegen_t(object):
             else: # legacy map1 0f prefix only, 2nd byte is opcode
                 iform.nominal_opcode = second.int_value 
                 iform.nom_opcode_bits = second.nbits
-                iform.map = self._compute_map(first.int_value)
-                iform.rule.actions[i] = actions.dummy_emit(first,'MAP') # replace 0x0F
+                iform.rule.actions[i] = actions.dummy_emit(first,'LEGACY_MAP1') # replace 0x0F
                 iform.rule.actions[i+1] = actions.dummy_emit(second,    # replace opcode
                                                              'NOM_OPCODE')
         
@@ -759,7 +795,6 @@ class instruction_codegen_t(object):
                                              emit_fo.function_name))
             
             print("NOM_OPCODE: %d" % iform.nominal_opcode)
-            print("MAP: %s" % iform.map)
             fbs_values = [ x.int_value for x in iform.fbs]
             print("FB values: %s" % fbs_values)
             print("\n\n")

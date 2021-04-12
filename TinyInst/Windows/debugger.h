@@ -17,6 +17,7 @@ limitations under the License.
 #ifndef DEBUGGER_H
 #define DEBUGGER_H
 
+#include <string>
 #include <list>
 #include "windows.h"
 
@@ -48,6 +49,7 @@ public:
     BREAKPOINT,
     ACCESS_VIOLATION,
     ILLEGAL_INSTRUCTION,
+    STACK_OVERFLOW,
     OTHER
   };
 
@@ -121,7 +123,8 @@ protected:
   void *RemoteAllocateNear(uint64_t region_min,
     uint64_t region_max,
     size_t size,
-    MemoryProtection protection);
+    MemoryProtection protection,
+    bool use_shared_memory = false);
 
   void ExtractCodeRanges(void *module_base,
                          size_t min_address,
@@ -154,7 +157,7 @@ private:
 
   void StartProcess(char *cmd);
   void GetProcessPlatform();
-  DebuggerStatus DebugLoop();
+  DebuggerStatus DebugLoop(uint32_t timeout, bool killing=false);
   int HandleDebuggerBreakpoint(void *address);
   void HandleDllLoadInternal(LOAD_DLL_DEBUG_INFO *LoadDll);
   DebuggerStatus HandleExceptionInternal(EXCEPTION_RECORD *exception_record);
@@ -166,7 +169,7 @@ private:
   void DeleteBreakpoints();
   DWORD WindowsProtectionFlags(MemoryProtection protection);
   DWORD GetImageSize(void *base_address);
-  DWORD GetProcOffset(char *data, char *name);
+  DWORD GetProcOffset(char *data, const char *name);
   void *RemoteAllocateBefore(uint64_t min_address,
                              uint64_t max_address,
                              size_t size,
@@ -191,7 +194,6 @@ private:
   DEBUG_EVENT dbg_debug_event;
   DWORD dbg_continue_status;
   bool dbg_continue_needed;
-  uint64_t dbg_timeout_time;
   DebuggerStatus dbg_last_status;
 
   int wow64_target = 0;
@@ -210,8 +212,8 @@ private:
   // persistence related
   int target_num_args;
   uint64_t target_offset;
-  char target_module[MAX_PATH];
-  char target_method[MAX_PATH];
+  std::string target_module;
+  std::string target_method;
   int calling_convention;
   void *target_address;
   void *saved_sp;

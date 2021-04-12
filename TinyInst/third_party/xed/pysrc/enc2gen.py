@@ -168,13 +168,17 @@ arg_imm32 = 'xed_uint32_t ' + var_imm32
 var_imm64 = 'imm64'
 arg_imm64 = 'xed_uint64_t ' + var_imm64
 
+def special_index_cases(ii):
+    if ii.avx512_vsib or ii.avx_vsib or ii.sibmem:
+        return True
+    return False
 
 # if I wanted to prune the number of memory variants, I could set
 # index_vals to just [True]. 
 index_vals = [False,True]
 def get_index_vals(ii):
     global index_vals
-    if ii.avx512_vsib or ii.avx_vsib:
+    if special_index_cases(ii):
         return [True]
     return index_vals
 
@@ -322,9 +326,15 @@ def op_mem(op):
     if 'MEM' in op.name:
         return True
     return False
+
 def op_agen(op): # LEA
     if 'AGEN' in op.name:
         return True
+    return False
+def op_tmm(op):
+    if op.lookupfn_name:
+        if 'TMM' in op.lookupfn_name:
+            return True
     return False
 def op_xmm(op):
     if op.lookupfn_name:
@@ -750,7 +760,7 @@ def emit_required_legacy_map_escapes(ii,fo):
     elif ii.map == 3:
         fo.add_code_eol('emit(r,0x0F)', 'escape map 3')
         fo.add_code_eol('emit(r,0x3A)', 'escape map 3')
-    elif ii.map == 'AMD3DNOW':
+    elif ii.amd_3dnow_opcode:
         fo.add_code_eol('emit(r,0x0F)', 'escape map 3dNOW')
         fo.add_code_eol('emit(r,0x0F)', 'escape map 3dNOW')
 
@@ -892,7 +902,7 @@ def make_function_object(env, ii, fname, return_value='void', asz=None):
     return fo
 
 
-def make_opnd_signature(env, ii, using_width=None, broadcasting=False):
+def make_opnd_signature(env, ii, using_width=None, broadcasting=False, special_xchg=False):
     '''This is the heart of the naming conventions for the encode
        functions. If using_width is present, it is used for GPRv and
        GPRy operations to specify a width.    '''
@@ -902,10 +912,17 @@ def make_opnd_signature(env, ii, using_width=None, broadcasting=False):
         rax_names = { 16: 'ax', 32:'eax', 64:'rax' }
         osz = _translate_width_int(w)
         return rax_names[osz]
+    
     def _translate_eax_name(w):
         eax_names = { 16: 'ax', 32:'eax', 64:'eax' }
         osz = _translate_width_int(w)
         return eax_names[osz]
+    
+    def _translate_r8_name(w):
+        # uppercase to try to differentiate r8 (generic 8b reg) from R8 64b reg
+        r8_names = { 16: 'R8W', 32:'R8D', 64:'R8' }
+        osz = _translate_width_int(w)
+        return r8_names[osz]
 
     def _translate_width_int(w):
         if w in [8,16,32,64]:
@@ -955,7 +972,9 @@ def make_opnd_signature(env, ii, using_width=None, broadcasting=False):
         if op.name.startswith('INDEX'):
             continue
 
-        if op_xmm(op):
+        if op_tmm(op):
+            s.append('t')
+        elif op_xmm(op):
             s.append('x')
         elif op_ymm(op):
             s.append('y')
@@ -976,7 +995,10 @@ def make_opnd_signature(env, ii, using_width=None, broadcasting=False):
         elif op_gpr64(op):
             s.append('r64') #FIXME something else
         elif op_gprv(op):
-            s.append('r' + _translate_width(using_width))
+            if special_xchg:
+                s.append(_translate_r8_name(using_width))
+            else:
+                s.append('r' + _translate_width(using_width))
         elif op_gprz(op):
             s.append('r' + _translate_width_z(using_width))
         elif op_gpry(op):
@@ -992,6 +1014,8 @@ def make_opnd_signature(env, ii, using_width=None, broadcasting=False):
                 s.append('m32')
             elif op.oc2 == 'q':
                 s.append('m64')
+            elif op.oc2 == 'ptr': # sibmem
+                s.append('mptr')
             #elif op.oc2 == 'dq': don't really want to start decorating the wider memops
             #    s.append('m128')
             elif op.oc2 == 'v' and using_width:
@@ -1002,7 +1026,9 @@ def make_opnd_signature(env, ii, using_width=None, broadcasting=False):
                 s.append('m' + _translate_width_z(using_width))
             else:
                 osz = _convert_to_osz(using_width) if using_width else 0
-                if op.oc2 == 'vv':
+                if op.oc2 == 'tv' or op.oc2.startswith('tm'):
+                    bits =  'tv'
+                elif op.oc2 == 'vv':
                     # read_xed_db figures out the memop width for
                     # no-broadcast and broadcasting cases for EVEX
                     # memops. 
@@ -1076,19 +1102,39 @@ def create_legacy_one_scalable_gpr(env,ii,osz_values,oc2):
     for osz in osz_values:
         if env.mode != 64 and osz == 64:
             continue
+
+        special_xchg = False
+        if ii.partial_opcode: 
+            if ii.rm_required != 'unspecified':
+                if ii.iclass == 'XCHG':
+                    if env.mode != 64:
+                        continue
+                    # This is a strange XCHG that takes r8w, r8d or r8
+                    # depending on the EOSZ. REX.B is required & 64b  mode obviously.
+                    # And no register specifier is required.
+                    special_xchg = True
         
-        opsig = make_opnd_signature(env,ii,osz)
+        opsig = make_opnd_signature(env, ii, osz, special_xchg=special_xchg)
         fname = "{}_{}_{}".format(enc_fn_prefix,
                                     ii.iclass.lower(),
                                     opsig)
 
         fo = make_function_object(env,ii,fname)
         fo.add_comment("created by create_legacy_one_scalable_gpr")
+        if special_xchg:
+            fo.add_comment("special xchg using R8W/R8D/R8")
         fo.add_arg(arg_request,'req')
-        fo.add_arg(arg_reg0, gprv_names[osz])
+        
+        if not special_xchg:
+            fo.add_arg(arg_reg0, gprv_names[osz])
         emit_required_legacy_prefixes(ii,fo)
         
-        rexw_forced = False
+        rex_forced = False
+
+        if special_xchg:
+            fo.add_code_eol('set_rexb(r,1)')
+            rex_forced  = True
+            
 
         if env.mode == 64 and osz == 16:
             if ii.eosz == 'osznot16':
@@ -1102,7 +1148,7 @@ def create_legacy_one_scalable_gpr(env,ii,osz_values,oc2):
                 warn("SKIPPING 64b version for: {} / {}".format(ii.iclass, ii.iform))
                 continue # skip 64b version for this instruction
             fo.add_code_eol('set_rexw(r)')
-            rexw_forced = True
+            rex_forced = True
         elif env.mode == 32 and osz == 16:
             if ii.eosz == 'osznot16':
                 warn("SKIPPING 16b version for: {} / {}".format(ii.iclass, ii.iform))
@@ -1136,14 +1182,14 @@ def create_legacy_one_scalable_gpr(env,ii,osz_values,oc2):
                     ii.encoder_skipped = True
                     return
             else:
-                # we have soem XCHG opcodes encoded as partia register
+                # we have some XCHG opcodes encoded as partial register
                 # instructions but have fixed RM fields.
-                fo.add_code_eol('set_rm(r,{})'.format(ii.rm_required))
+                fo.add_code_eol('set_srm(r,{})'.format(ii.rm_required))
 
                 #dump_fields(ii)
                 #die("SHOULD NOT HAVE A VALUE FOR  PARTIAL OPCODES HERE {} / {}".format(ii.iclass, ii.iform))
 
-        emit_rex(env,fo,rexw_forced)
+        emit_rex(env, fo, rex_forced)
         emit_required_legacy_map_escapes(ii,fo)
                 
         if ii.partial_opcode:
@@ -1369,7 +1415,10 @@ def scalable_implicit_operands(ii):
     return False
 
 def create_legacy_zero_operands_scalable(env,ii):
-    if ii.iclass in ['IN','OUT']:
+    # FIXME 2020-06-06: IN and OUT are the only two instr with OeAX()
+    # operands. I should write more general code for realizing that
+    # only 16/32 are accessible.
+    if ii.iclass in ['IN','OUT']:  
         osz_list = [16,32]
         
     for osz in osz_list:
@@ -1763,9 +1812,9 @@ def cond_add_imm_args(ii,fo):
         fo.add_arg(arg_imm8_2,'int8')    
     
 
-def emit_rex(env, fo, rexw_forced):
+def emit_rex(env, fo, rex_forced):
     if env.mode == 64:
-        if rexw_forced:
+        if rex_forced:
             fo.add_code_eol('emit_rex(r)')
         else:
             fo.add_code_eol('emit_rex_if_needed(r)')
@@ -1846,6 +1895,8 @@ def get_opnd_types(env, ii, osz=0):
         elif op_implicit_specific_reg(op):
             pass # ignore
            
+        elif op_tmm(op):
+            s.append('tmm')
         elif op_xmm(op):
             s.append('xmm')
         elif op_ymm(op):
@@ -2389,7 +2440,7 @@ def create_legacy_gprv_immv(env,ii,imm=False):
 
 def emit_partial_opcode_variable_srm(ii,fo):
     opcode = "0x{:02X}".format(ii.opcode_base10)
-    fo.add_code_eol('emit(r,{} | get_opcode_srm(r))'.format(opcode),
+    fo.add_code_eol('emit(r,{} | get_srm(r))'.format(opcode),
                     'partial opcode, variable srm')
 
 def emit_partial_opcode_fixed_srm(ii,fo):
@@ -2454,7 +2505,7 @@ def add_memop_args(env, ii, fo, use_index, dispsz, immw=0, reg=-1, osz=0):
     elif use_index:
         fo.add_arg(arg_index, gprv_index_names[env.asz])
         
-    if use_index or ii.avx_vsib or ii.avx512_vsib:
+    if use_index or special_index_cases(ii):
         if env.asz in [32,64]:
             fo.add_arg(arg_scale, 'scale')  # a32, a64
 
@@ -2904,8 +2955,8 @@ def finish_memop(env, ii, fo, dispsz, immw, rexw_forced=False, space='legacy'):
         
     emit_opcode(ii,fo)
     emit_modrm(fo)
-    if ii.avx_vsib or ii.avx512_vsib:
-        fo.add_code_eol('emit_sib(r)', 'for vsib')
+    if special_index_cases(ii):
+        fo.add_code_eol('emit_sib(r)', 'for vsib/sibmem')
     else:
         fo.add_code('if (get_has_sib(r))')
         fo.add_code_eol('    emit_sib(r)')
@@ -2956,13 +3007,15 @@ def add_evex_displacement_var(fo):
     fo.add_code_eol('xed_int32_t use_displacement')
     
 def chose_evex_scaled_disp(fo, ii, dispsz, broadcasting=False): # WIP
-    if broadcasting:
+    disp_fix = '16' if dispsz == 16 else ''
+    
+    if ii.avx512_tuple == 'NO_SCALE':
+        memop_width_bytes = 1
+    elif broadcasting:
         memop_width_bytes = ii.element_size // 8
     else:
         memop_width_bytes = ii.memop_width // 8
 
-    disp_fix = '16' if dispsz == 16 else ''
-    
     fo.add_code_eol('use_displacement = xed_chose_evex_scaled_disp{}(r, disp{}, {})'.format(
         disp_fix,
         dispsz,
@@ -3489,7 +3542,7 @@ def create_legacy_umonitor(env,ii):
             fo.add_code_eol('set_mod(r,{})'.format(ii.mod_required))
 
     emit_required_legacy_prefixes(ii,fo)
-    emit_rex(env,fo,rexw_forced=False)
+    emit_rex(env,fo,rex_forced=False)
     emit_required_legacy_map_escapes(ii,fo)
     emit_opcode(ii,fo)
     emit_modrm(fo)
@@ -3547,7 +3600,7 @@ def create_legacy_ArAX_implicit(env,ii):
             fo.add_code_eol('set_mod(r,{})'.format(ii.mod_required))
 
     emit_required_legacy_prefixes(ii,fo)
-    #emit_rex(env,fo,rexw_forced=False)
+    #emit_rex(env,fo,rex_forced=False)
     emit_required_legacy_map_escapes(ii,fo)
     emit_opcode(ii,fo)
     emit_modrm(fo)
@@ -4088,7 +4141,195 @@ def create_vex_all_mask_reg(env,ii):
     if ii.has_imm8:
         cond_emit_imm8(ii,fo)
     add_enc_func(ii,fo)
+
+def vex_amx_mem(ii):
+    if 'AMX' in ii.isa_set:
+        for op in _gen_opnds(ii):
+            if op_mem(op):
+                return True
+    return False
+
+def vex_amx_reg(ii):
+    if 'AMX' in ii.isa_set:
+        for op in _gen_opnds(ii):
+            if op_mem(op):
+                return False
+        return True
+    return False
+
+def create_vex_amx_reg(env,ii): # FIXME: XXX
+    global enc_fn_prefix, arg_request
+    global arg_reg0,  var_reg0
+    global arg_reg1,  var_reg1
+    global arg_reg2,  var_reg2
+    global arg_reg3,  var_reg3
+
+    nopnds = count_operands(ii) # not imm8
+    opnd_sig = make_opnd_signature(env,ii)
+    fname = "{}_{}_{}".format(enc_fn_prefix,
+                              ii.iclass.lower(),
+                              opnd_sig)
+
+    fo = make_function_object(env,ii,fname)
+    fo.add_comment("created by create_vex_amx_reg opnd_sig={} nopnds={}".format(opnd_sig,nopnds))
+    fo.add_arg(arg_request,'req')
+    opnd_types = get_opnd_types(env,ii)
+    if nopnds >= 1:
+        fo.add_arg(arg_reg0,opnd_types[0])
+    if nopnds >= 2:
+        fo.add_arg(arg_reg1, opnd_types[1])
+        if nopnds >= 3:
+            fo.add_arg(arg_reg2, opnd_types[2])
+            if nopnds >= 4:
+                fo.add_arg(arg_reg3, opnd_types[3])
+    cond_add_imm_args(ii,fo)
+
+    set_vex_pp(ii,fo)
+    fo.add_code_eol('set_map(r,{})'.format(ii.map))
+    
+    if ii.vl == '256': # ZERO INIT OPTIMIZATION
+        fo.add_code_eol('set_vexl(r,1)')
         
+    fo.add_code_eol('set_mod(r,3)')
+
+    vars = [var_reg0, var_reg1, var_reg2, var_reg3]
+
+    var_r, var_b, var_n, var_se = None, None, None, None
+    for i,op in enumerate(_gen_opnds(ii)):
+        if op.lookupfn_name:
+            if op.lookupfn_name.endswith('_R'):
+                var_r,sz_r = vars[i], get_type_size(op)
+            elif op.lookupfn_name.endswith('_B'):
+                var_b,sz_b = vars[i], get_type_size(op)
+            elif op.lookupfn_name.endswith('_N'):
+                var_n,sz_n = vars[i], get_type_size(op)
+            else:
+                die("SHOULD NOT REACH HERE")
+    if ii.rexw_prefix == '1':
+        fo.add_code_eol('set_rexw(r)')
+
+    if var_n:
+        fo.add_code_eol('enc_vvvv_reg_{}(r,{})'.format(sz_n, var_n))
+    else:
+        fo.add_code_eol('set_vvvv(r,0xF)',"must be 1111")
+        
+    if var_r:
+        fo.add_code_eol('enc_modrm_reg_{}(r,{})'.format(sz_r, var_r))
+    elif ii.reg_required != 'unspecified':
+        if ii.reg_required: # ZERO INIT OPTIMIZATION
+            fo.add_code_eol('set_reg(r,{})'.format(ii.reg_required))
+        
+    if var_b:
+        fo.add_code_eol('enc_modrm_rm_{}(r,{})'.format(sz_b, var_b))
+    elif ii.rm_required != 'unspecified':
+        if ii.rm_required: # ZERO INIT OPTIMIZATION
+            fo.add_code_eol('set_rm(r,{})'.format(ii.rm_required))
+        
+    emit_vex_prefix(env, ii,fo,register_only=True)
+    emit_opcode(ii,fo)
+    emit_modrm(fo)
+    if ii.has_imm8:
+        cond_emit_imm8(ii,fo)
+    elif var_se:
+        fo.add_code_eol('emit_se_imm8_reg(r)')
+    add_enc_func(ii,fo)
+    
+
+def create_vex_amx_mem(env,ii): # FIXME: XXX
+    global enc_fn_prefix, arg_request
+    global arg_reg0,  var_reg0
+    global arg_reg1,  var_reg1
+    global arg_reg2,  var_reg2
+    global arg_reg3,  var_reg3
+    global arg_imm8
+
+    nopnds = count_operands(ii) # skips imm8
+    op = first_opnd(ii)
+    width = op.oc2
+    opsig = make_opnd_signature(env,ii)
+    immw=0
+    if ii.has_imm8:
+        immw=8
+    dispsz_list = get_dispsz_list(env)
+    opnd_types_org = get_opnd_types(env,ii)
+    arg_regs = [ arg_reg0, arg_reg1, arg_reg2, arg_reg3 ]
+    var_regs = [ var_reg0, var_reg1, var_reg2, var_reg3 ]
+        
+    ispace = itertools.product(get_index_vals(ii), dispsz_list)
+    for use_index, dispsz  in ispace:
+        memaddrsig = get_memsig(env.asz, use_index, dispsz)
+
+        fname = "{}_{}_{}_{}".format(enc_fn_prefix,
+                                     ii.iclass.lower(),
+                                     opsig,
+                                     memaddrsig)
+
+        fo = make_function_object(env,ii,fname, asz=env.asz)
+        fo.add_comment("created by create_vex_amx_mem")
+        fo.add_arg(arg_request,'req')
+        opnd_types = copy.copy(opnd_types_org)
+
+        regn = 0
+        for i,optype in enumerate(opnd_types_org):
+            if optype in ['tmm','xmm','ymm','zmm', 'gpr32', 'gpr64', 'kreg']:
+                fo.add_arg(arg_regs[regn], opnd_types.pop(0))
+                regn += 1
+            elif optype in ['mem']:
+                add_memop_args(env, ii, fo, use_index, dispsz, immw=0)
+                opnd_types.pop(0)
+            elif optype in 'int8':
+                fo.add_arg(arg_imm8,'int8')
+                opnd_types.pop(0) # imm8 is last so we technically can skip this pop
+            else:
+                die("UNHANDLED ARG {} in {}".format(optype, ii.iclass))
+
+        set_vex_pp(ii,fo)
+        fo.add_code_eol('set_map(r,{})'.format(ii.map))
+
+        if ii.vl == '256': # Not setting VL=128 since that is ZERO OPTIMIZATION
+            fo.add_code_eol('set_vexl(r,1)')
+        
+        # FIXME REFACTOR function-ize this
+        var_r, var_b, var_n, var_se = None,None,None,None
+        sz_r,  sz_b,  sz_n,  sz_se  = None,None,None,None
+        for i,op in enumerate(_gen_opnds_nomem(ii)): # use no mem version to skip memop if a store-type op
+            if op.lookupfn_name:
+                if op.lookupfn_name.endswith('_R'):
+                    var_r,sz_r = var_regs[i],get_type_size(op)
+                elif op.lookupfn_name.endswith('_B'):
+                    var_b,sz_b = var_regs[i],get_type_size(op)
+                elif op.lookupfn_name.endswith('_N'):
+                    var_n,sz_n = var_regs[i],get_type_size(op)
+                else:
+                    die("SHOULD NOT REACH HERE")
+
+        if ii.rexw_prefix == '1':
+            fo.add_code_eol('set_rexw(r)')
+            
+        if var_n == None:
+            fo.add_code_eol('set_vvvv(r,0xF)',"must be 1111")
+        else:
+            fo.add_code_eol('enc_vvvv_reg_{}(r,{})'.format(sz_n, var_n))
+            
+        if var_r:
+            fo.add_code_eol('enc_modrm_reg_{}(r,{})'.format(sz_r, var_r))
+        elif ii.reg_required != 'unspecified':
+            if ii.reg_required: # ZERO INIT OPTIMIZATION
+                fo.add_code_eol('set_reg(r,{})'.format(ii.reg_required))
+
+        if var_b:
+            fo.add_code_eol('enc_modrm_rm_{}(r,{})'.format(sz_b, var_b))
+        elif ii.rm_required != 'unspecified':
+            if ii.rm_required: # ZERO INIT OPTIMIZATION
+                fo.add_code_eol('set_rm(r,{})'.format(ii.rm_required))
+                
+        encode_mem_operand(env, ii, fo, use_index, dispsz)
+        emit_vex_prefix(env, ii,fo,register_only=False)
+        
+        finish_memop(env, ii, fo, dispsz, immw,  space='vex')
+        add_enc_func(ii,fo)
+
+    
 def _enc_vex(env,ii):
     if several_xymm_gpr_imm8(ii):
         create_vex_simd_reg(env,ii)
@@ -4098,9 +4339,13 @@ def _enc_vex(env,ii):
         create_vex_all_mask_reg(env,ii)
     elif vex_one_mask_reg_and_one_gpr(ii):
         create_vex_one_mask_reg_and_one_gpr(env,ii)
-        
     elif vex_vzero(ii):
         create_vex_vzero(env,ii)
+    elif vex_amx_reg(ii):
+        create_vex_amx_reg(env,ii)
+    elif vex_amx_mem(ii):
+        create_vex_amx_mem(env,ii)
+    
         
 def vex_vzero(ii):
     return ii.iclass.startswith('VZERO')
@@ -4912,7 +5157,7 @@ def xed_mode_removal(env,ii):
     
 def create_enc_fn(env, ii):
     if env.asz == 16:
-        if ii.avx_vsib or ii.avx512_vsib:
+        if special_index_cases(ii):
             ii.encoder_skipped = True
             return
         
@@ -4998,7 +5243,9 @@ def spew(ii):
 
     if ii.space == 'evex':
         if ii.avx512_tuple:
-            s.append("TUP:{}-{}-{}-{}".format(ii.avx512_tuple,ii.element_size,ii.memop_width_code,ii.memop_width))
+            mwc = ii.memop_width_code if hasattr(ii,'memop_width_code') else 'MWC???'
+            mw = ii.memop_width if hasattr(ii,'memop_width') else 'MW???'
+            s.append("TUP:{}-{}-{}-{}".format(ii.avx512_tuple,ii.element_size,mwc,mw))
         else:
             s.append("no-tuple")
         if ii.write_masking:
@@ -5196,8 +5443,11 @@ def work():
     args.prefix = os.path.join(args.gendir,'dgen')
     if args.output_file_list == None:
         args.output_file_list = os.path.join(args.gendir, 'enc2-list-of-files.txt')
-    
-    dbg_fn = os.path.join(args.gendir,'enc2out.txt')
+    def _mkstr(lst):
+        s = [str(x) for x in lst]
+        return  ":".join(s)
+    dbg_fn = os.path.join(args.gendir,'enc2out-m{}-a{}.txt'.format(_mkstr(args.modes),
+                                                                   _mkstr(args.asz_list)))
     msge("Writing {}".format(dbg_fn))
     set_dbg_output(open(dbg_fn,"w"))
     

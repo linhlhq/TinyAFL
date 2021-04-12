@@ -45,6 +45,8 @@ SEG_OVD        SCALAR     xed_bits_t 3       SUPPRESSED   NOPRINT INTERNAL DO EO
 #       3=NOT TAKEN HINT VALIDATED for a BRANCH
 #       4=TAKEN HINT VALIDATED for a BRANCH
 HINT           SCALAR     xed_bits_t 3       SUPPRESSED   NOPRINT PUBLIC   DO EI
+# do not do encoder chip checking for the encode request
+ENCODE_FORCE   SCALAR     xed_bits_t 1       SUPPRESSED   NOPRINT INTERNAL  DO EI
 
 LOCK           SCALAR     xed_bits_t 1       SUPPRESSED   PRINT   PUBLIC   DO EO
 
@@ -138,12 +140,13 @@ BASE0          SCALAR     xed_reg_enum_t 16     EXPLICIT    PRINT   PUBLIC   DO 
 INDEX          SCALAR     xed_reg_enum_t 16     EXPLICIT    PRINT   INTERNAL   DO EI   
 SCALE          SCALAR     xed_bits_t 4              EXPLICIT    PRINT   INTERNAL   DO EI #1/2/4/8
 
-#  SCALE is used by the user. SIBSCALE is internal
+# NEED_SIB is variable used by encoder to control emitting fa sib byte. not used by decoder
+NEED_SIB       SCALAR     xed_bits_t 1              SUPPRESSED  NOPRINT INTERNAL DO EO 
 
-SIB            SCALAR     xed_bits_t 1              SUPPRESSED  NOPRINT INTERNAL DO EO # ENCODER INTERNAL
-SIBSCALE       SCALAR     xed_bits_t 2              SUPPRESSED  NOPRINT INTERNAL DO EO # ENCODER INTERNAL
-SIBBASE        SCALAR     xed_bits_t 3              SUPPRESSED  NOPRINT INTERNAL DO EO # ENCODER INTERNAL
-SIBINDEX       SCALAR     xed_bits_t 3              SUPPRESSED  NOPRINT INTERNAL DO EO # ENCODER INTERNAL
+# raw values of the SIB fields:
+SIBSCALE       SCALAR     xed_bits_t 2              SUPPRESSED  NOPRINT INTERNAL DO EO
+SIBBASE        SCALAR     xed_bits_t 3              SUPPRESSED  NOPRINT INTERNAL DO EO
+SIBINDEX       SCALAR     xed_bits_t 3              SUPPRESSED  NOPRINT INTERNAL DO EO
 
 #  For the string ops:
 SEG1           SCALAR     xed_reg_enum_t 16     EXPLICIT    PRINT   INTERNAL   DO EI   
@@ -175,6 +178,7 @@ REG5           SCALAR     xed_reg_enum_t 16    EXPLICIT    PRINT   PUBLIC   DO E
 REG6           SCALAR     xed_reg_enum_t 16    EXPLICIT    PRINT   PUBLIC   DO EI
 REG7           SCALAR     xed_reg_enum_t 16    EXPLICIT    PRINT   PUBLIC   DO EI
 REG8           SCALAR     xed_reg_enum_t 16    EXPLICIT    PRINT   PUBLIC   DO EI
+REG9           SCALAR     xed_reg_enum_t 16    EXPLICIT    PRINT   PUBLIC   DO EI
 
 OUTREG         SCALAR     xed_reg_enum_t 16    SUPPRESSED NOPRINT INTERNAL DO EI  #  output for lookup-functions
 ENCODER_PREFERRED SCALAR  xed_bits_t 1         SUPPRESSED NOPRINT INTERNAL DO EI # encoder preference when underdetermined.
@@ -189,7 +193,6 @@ ELEMENT_SIZE   SCALAR     xed_bits_t      9     SUPPRESSED NOPRINT INTERNAL DO E
 #ILD-spesific operands
 MAP            SCALAR     xed_bits_t      4    SUPPRESSED NOPRINT INTERNAL DO EO
 OUT_OF_BYTES   SCALAR     xed_bits_t      1    SUPPRESSED NOPRINT INTERNAL DO EI
-AMD3DNOW       SCALAR     xed_bits_t      1    SUPPRESSED NOPRINT INTERNAL DO EI
 FIRST_F2F3     SCALAR     xed_bits_t      2    SUPPRESSED NOPRINT INTERNAL DO EI
 LAST_F2F3      SCALAR     xed_bits_t      2    SUPPRESSED NOPRINT INTERNAL DO EI
 ILD_F2         SCALAR     xed_bits_t      1    SUPPRESSED NOPRINT INTERNAL DO EI
@@ -201,6 +204,7 @@ NREXES         SCALAR     xed_bits_t      8    SUPPRESSED NOPRINT INTERNAL DO EI
 NPREFIXES      SCALAR     xed_bits_t      8    SUPPRESSED NOPRINT INTERNAL DO EI
 NOMINAL_OPCODE SCALAR     xed_bits_t      8    SUPPRESSED NOPRINT INTERNAL DO EI
 POS_NOMINAL_OPCODE SCALAR     xed_bits_t      8    SUPPRESSED NOPRINT INTERNAL DO EI
+# HAS_MODRM: 0=no, 1=yes, 2=yes, but ignore MOD, 3=undefined
 HAS_MODRM      SCALAR     xed_bits_t      2    SUPPRESSED NOPRINT INTERNAL DO EI
 HAS_SIB        SCALAR     xed_bits_t      1    SUPPRESSED NOPRINT INTERNAL DO EI
 POS_MODRM      SCALAR     xed_bits_t      8    SUPPRESSED NOPRINT INTERNAL DO EI

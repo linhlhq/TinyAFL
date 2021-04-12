@@ -44,23 +44,6 @@ typedef struct {xed_uint32_t key; xed_uint32_t value;} lu1_entry_t;
 typedef struct {xed_uint32_t key; xed3_find_func_t l2_func;} lu2_entry_t;
 
 
-typedef enum {
-    XED_ILD_MAP0,
-    XED_ILD_MAP1, /* 0F (all encoding spaces) */
-    XED_ILD_MAP2, /* 0F38 (all encoding spaces) */
-    XED_ILD_MAP3, /* 0F3A (all encoding spaces) */
-    XED_ILD_MAP4,  /* required placeholders */
-    XED_ILD_MAP5,
-    XED_ILD_MAP6,
-    XED_ILD_MAPAMD,   /* fake map 7 -  amd 3dnow */
-    XED_ILD_MAP_XOP8, /* amd xop */
-    XED_ILD_MAP_XOP9, /* amd xop */
-    XED_ILD_MAP_XOPA, /* amd xop */
-    XED_ILD_MAP_LAST,  /* for array sizing */
-    XED_ILD_MAP_INVALID /* for error handling */
-} xed_ild_map_enum_t;
-
-
 #define XED_GRAMMAR_MODE_64 2
 #define XED_GRAMMAR_MODE_32 1
 #define XED_GRAMMAR_MODE_16 0

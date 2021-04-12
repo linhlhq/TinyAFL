@@ -1481,10 +1481,10 @@ void TinyInst::TranslateBasicBlockRecursive(char *address, ModuleInfo *module) {
 }
 
 // gets ModuleInfo for the module specified by name
-TinyInst::ModuleInfo *TinyInst::GetModuleByName(char *name) {
+TinyInst::ModuleInfo *TinyInst::GetModuleByName(const char *name) {
   for (auto iter = instrumented_modules.begin(); iter != instrumented_modules.end(); iter++) {
     ModuleInfo *cur_module = *iter;
-    if (_stricmp(cur_module->module_name, name) == 0) {
+    if (_stricmp(cur_module->module_name.c_str(), name) == 0) {
       return cur_module;
     }
   }
@@ -1555,7 +1555,7 @@ void TinyInst::OnCrashed(Exception *exception_record) {
   ModuleInfo *module = GetModuleFromInstrumented((size_t)address);
   if (!module) return;
 
-  printf("Exception in instrumented module %s\n", module->module_name);
+  printf("Exception in instrumented module %s\n", module->module_name.c_str());
   size_t offset = (size_t)address - (size_t)module->instrumented_code_remote;
   
   printf("Code before:\n");
@@ -1565,6 +1565,7 @@ void TinyInst::OnCrashed(Exception *exception_record) {
   for (size_t i = offset_from; i < offset; i++) {
     printf("%02x ", (unsigned char)(module->instrumented_code_local[i]));
   }
+  printf("\n");
   printf("Code after:\n");
   size_t offset_to = offset + 0x10;
   if (offset_to > module->instrumented_code_size)
@@ -1572,6 +1573,7 @@ void TinyInst::OnCrashed(Exception *exception_record) {
   for (size_t i = offset; i < offset_to; i++) {
     printf("%02x ", (unsigned char)(module->instrumented_code_local[i]));
   }
+  printf("\n");
 }
 
 // gets the address in the instrumented code corresponding to
@@ -1613,7 +1615,7 @@ bool TinyInst::TryExecuteInstrumented(char *address) {
   if (!GetRegion(module, (size_t)address)) return false;
 
   if (trace_module_entries) {
-    printf("TRACE: Entered module %s at address %p\n", module->module_name, address);
+    printf("TRACE: Entered module %s at address %p\n", module->module_name.c_str(), address);
   }
 
   size_t translated_address = GetTranslatedAddress(module, (size_t)address);
@@ -1638,6 +1640,7 @@ void TinyInst::ClearInstrumentation(ModuleInfo *module) {
 }
 
 void TinyInst::InstrumentModule(ModuleInfo *module) {
+  if (instrumentation_disabled) return;
 
   // if the module was previously instrumented
   // just reuse the same data
@@ -1646,7 +1649,7 @@ void TinyInst::InstrumentModule(ModuleInfo *module) {
     FixCrossModuleLinks(module);
     printf("Module %s already instrumented, "
            "reusing instrumentation data\n",
-           module->module_name);
+           module->module_name.c_str());
     return;
   }
 
@@ -1691,8 +1694,8 @@ void TinyInst::InstrumentModule(ModuleInfo *module) {
   module->instrumented = true;
   FixCrossModuleLinks(module);
 
-  //printf("Instrumented module %s, code size: %zd\n",
-  //       module->module_name, module->code_size);
+  printf("Instrumented module %s, code size: %zd\n",
+         module->module_name.c_str(), module->code_size);
 
   OnModuleInstrumented(module);
 }
@@ -1716,7 +1719,7 @@ TinyInst::ModuleInfo *TinyInst::IsInstrumentModule(char *module_name) {
        iter != instrumented_modules.end(); iter++)
   {
     ModuleInfo *cur_module = *iter;
-    if (_stricmp(module_name, cur_module->module_name) == 0) {
+    if (_stricmp(module_name, cur_module->module_name.c_str()) == 0) {
       return cur_module;
     }
   }
@@ -1739,7 +1742,9 @@ void TinyInst::OnInstrumentModuleLoaded(void *module, ModuleInfo *target_module)
                &target_module->max_address);
   target_module->loaded = true;
 
-  if (target_function_defined) {
+  if(instrument_modules_on_load) {
+    InstrumentModule(target_module);
+  } else if (target_function_defined) {
     if (target_reached) InstrumentModule(target_module);
   } else if (child_entrypoint_reached) {
     InstrumentModule(target_module);
@@ -1777,13 +1782,13 @@ void TinyInst::OnModuleUnloaded(void *module) {
 void TinyInst::OnTargetMethodReached() {
   Debugger::OnTargetMethodReached();
 
-  if (target_function_defined) InstrumentAllLoadedModules();
+  if (target_function_defined && !instrument_modules_on_load) InstrumentAllLoadedModules();
 }
 
 void TinyInst::OnEntrypoint() {
   Debugger::OnEntrypoint();
 
-  if(!target_function_defined) InstrumentAllLoadedModules();
+  if(!target_function_defined && !instrument_modules_on_load) InstrumentAllLoadedModules();
 }
 
 
@@ -1828,6 +1833,7 @@ void TinyInst::OnProcessExit() {
     ModuleInfo *cur_module = *iter;
     cur_module->loaded = false;
     cur_module->ClearInstrumentation();
+    OnModuleUninstrumented(cur_module);
   }
   // clear cross-module links
   ClearCrossModuleLinks();
@@ -1838,6 +1844,9 @@ void TinyInst::Init(int argc, char **argv) {
   // init the debugger first
   Debugger::Init(argc, argv);
 
+  instrumentation_disabled = false;
+
+  instrument_modules_on_load = GetBinaryOption("-instrument_modules_on_load", argc, argv, false);
   patch_return_addresses = GetBinaryOption("-patch_return_addresses", argc, argv, false);
   instrument_cross_module_calls = GetBinaryOption("-instrument_cross_module_calls", argc, argv, true);
   persist_instrumentation_data = GetBinaryOption("-persist_instrumentation_data", argc, argv, true);
@@ -1853,7 +1862,7 @@ void TinyInst::Init(int argc, char **argv) {
   GetOptionAll("-instrument_module", argc, argv, &module_names);
   for (auto iter = module_names.begin(); iter != module_names.end(); iter++) {
     ModuleInfo *new_module = new ModuleInfo();
-    strncpy(new_module->module_name, *iter, MAX_PATH);
+    new_module->module_name = *iter;
     instrumented_modules.push_back(new_module);
   }
 

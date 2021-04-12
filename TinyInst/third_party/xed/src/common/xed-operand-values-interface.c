@@ -203,7 +203,11 @@ xed_operand_values_has_lock_prefix(const xed_operand_values_t* p) {
 #if defined(XED_DECODER)
 xed_bool_t
 xed_operand_values_get_atomic(const xed_operand_values_t* p) {
-    return xed_decoded_inst_get_attribute(p,XED_ATTRIBUTE_LOCKED);
+    return xed_decoded_inst_get_attribute(p,XED_ATTRIBUTE_LOCKED)
+#if defined(XED_ATTRIBUTE_ATOMIC_DEFINED)
+        || xed_decoded_inst_get_attribute(p,XED_ATTRIBUTE_ATOMIC)
+#endif
+        ;
 }
 
 
@@ -245,7 +249,7 @@ xed_operand_values_has_modrm_byte(const xed_operand_values_t* p) {
 }
 xed_bool_t 
 xed_operand_values_has_sib_byte(const xed_operand_values_t* p) {
-    return xed3_operand_get_sib(p);
+    return xed3_operand_get_has_sib(p);
 }
 
 xed_bool_t
@@ -413,6 +417,14 @@ xed_bool_t
 xed_operand_values_branch_taken_hint(const xed_operand_values_t* p)
 {
     if (xed3_operand_get_hint(p)==4)
+        return 1;
+    return 0;
+}
+
+xed_bool_t
+xed_operand_values_cet_no_track(const xed_operand_values_t* p)
+{
+    if (xed3_operand_get_hint(p)==5)
         return 1;
     return 0;
 }
@@ -770,6 +782,7 @@ xed_operand_values_set_operand_reg(xed_operand_values_t* p,
     case XED_OPERAND_REG6: xed3_operand_set_reg6(p,reg_name); break;
     case XED_OPERAND_REG7: xed3_operand_set_reg7(p,reg_name); break;
     case XED_OPERAND_REG8: xed3_operand_set_reg8(p,reg_name); break;
+    case XED_OPERAND_REG9: xed3_operand_set_reg9(p,reg_name); break;
     case XED_OPERAND_BASE0: xed3_operand_set_base0(p,reg_name); break;
     case XED_OPERAND_BASE1: xed3_operand_set_base1(p,reg_name); break;
     case XED_OPERAND_INDEX: xed3_operand_set_index(p,reg_name); break;
@@ -1029,10 +1042,25 @@ xed_operand_values_dump(    const xed_operand_values_t* ov,
                           }
                           break;
                       }
-                      default:
-                        blen = xed_strncat(buf,"NOT HANDLING CTYPE ",blen);
-                        blen = xed_strncat(buf, xed_operand_ctype_enum_t2str(ctype),blen);
-                        xed_assert(0);
+#if defined(XED_OPERAND_ELEMENT_TYPE_ENUM_T_DEFINED) // used by KNC
+                      case XED_OPERAND_ELEMENT_TYPE_ENUM_T: {
+                          xed_operand_element_type_enum_t etype = xed3_operand_get_type(ov);
+                          if (etype){
+                              blen = xed_strncpy(tmp_buf, xed_operand_element_type_enum_t2str(etype),blen);
+                              need_to_emit = 1;
+                          }
+                          break;
+                      }
+#endif
+                      default: {
+                        xed_bits_t b;
+                        xed3_get_generic_operand(ov,i,&b);
+                        if (b) {   
+                            blen = xed_strncat(buf,"NOT HANDLING CTYPE ",blen);
+                            blen = xed_strncat(buf, xed_operand_ctype_enum_t2str(ctype),blen);
+                            xed_assert(0);
+                        }
+                      }
                     } /* inner switch */
                     /* only print nonzero generic stuff */
                     if (need_to_emit){

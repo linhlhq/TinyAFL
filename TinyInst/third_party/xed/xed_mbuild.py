@@ -56,8 +56,7 @@ except:
 ############################################################################
 
 def aq(s):
-    t = mbuild.cond_add_quotes(s)
-    return t
+    return mbuild.escape_string(s)
 
 def check_mbuild_file(mbuild_file, sig_file):
     if os.path.exists(sig_file):
@@ -83,7 +82,8 @@ def check_mbuild_file(mbuild_file, sig_file):
 class generator_inputs_t(object):
     def __init__(self, build_dir, 
                  amd_enabled=True,
-                 limit_strings=False):
+                 limit_strings=False,
+                 encoder_chip='ALL'):
         self.fields = ['dec-spine',
                        'dec-instructions',
                        'enc-instructions',
@@ -101,8 +101,9 @@ class generator_inputs_t(object):
                        'chip-models',
                        'conversion-table',
                        'cpuid',
-                       'map-descriptions'
+                       'map-descriptions',
                        ]
+        self.encoder_chip = encoder_chip
         self.files = {} # lists of input files per field type
         self.priority = {} # field type -> int
 
@@ -227,7 +228,7 @@ class generator_inputs_t(object):
             s.append(extra_args)
         return ' '.join(s)
 
-    def encode_command(self, xedsrc, extra_args=None, amd_enabled=True):
+    def encode_command(self, xedsrc, extra_args=None, amd_enabled=True, chip='ALL'):
         """Produce an encoder generator command"""
         s = []
         s.append( '%(pythonarg)s' )
@@ -240,6 +241,10 @@ class generator_inputs_t(object):
         s.append('--input-fields %s' % aq(self.file_name['fields']))
         s.append('--input-state %s' % aq(self.file_name['state']))
         s.append('--input-regs %s' % aq(self.file_name['registers']))
+        s.append('--map-descriptions ' + aq(self.file_name['map-descriptions']))
+        s.append('--chip-models ' + aq(self.file_name['chip-models']))
+        s.append('--chip ' + aq(self.encoder_chip))
+
         if not amd_enabled:
             s.append('--no-amd')
         if extra_args:
@@ -299,8 +304,8 @@ def run_decode_generator(gc, env):
     if env == None:
         return (1, ['no env!'])
     
-    xedsrc = env.escape_string(env['src_dir'])
-    build_dir = env.escape_string(env['build_dir'])
+    xedsrc    = aq(env['src_dir'])
+    build_dir = aq(env['build_dir'])
     debug = ""
     other_args = " ".join(env['generator_options']) 
     gen_extra_args = "--gendir %s --xeddir %s %s %s" % (build_dir,
@@ -335,13 +340,14 @@ def run_encode_generator(gc, env):
     if env == None:
         return (1, ['no env!'])
     
-    xedsrc = env.escape_string(env['src_dir'])
-    build_dir = env.escape_string(env['build_dir'])
+    xedsrc    = aq(env['src_dir'])
+    build_dir = aq(env['build_dir'])
         
     gen_extra_args = "--gendir %s --xeddir %s" % (build_dir, xedsrc)
     cmd = env.expand(gc.encode_command(xedsrc,
                                        gen_extra_args,
-                                       env['amd_enabled']))
+                                       env['amd_enabled'],
+                                       env['encoder_chip']))
     if mbuild.verbose(2):
         mbuild.msgb("ENC-GEN", cmd)
     (retval, output, error_output) = mbuild.run_command(cmd,
@@ -377,9 +383,9 @@ def run_encode_generator2(args, env):
     if env == None:
         return (1, ['no env!'])
     
-    args.xeddir = env.escape_string(env['src_dir'])
+    args.xeddir = aq(env['src_dir'])
     # we append our own paths in the generator
-    args.gendir = env.escape_string(env['libxed_build_dir']) 
+    args.gendir = aq(env['libxed_build_dir']) 
         
     cmd = env.expand( _encode_command2(args) )
 
@@ -600,6 +606,7 @@ def mkenv():
                                  cnl=True,
                                  icl=True,
                                  tgl=True,
+                                 adl=True,
                                  spr=True,
                                  future=True,
                                  knl=True,
@@ -612,6 +619,7 @@ def mkenv():
                                  kit_kind='base',
                                  win=False,
                                  amd_enabled=True,
+                                 encoder_chip='ALL',
                                  via_enabled=True,
                                  encoder=True,
                                  decoder=True,
@@ -805,6 +813,10 @@ def xed_args(env):
                           action="store_false", 
                           dest="tgl", 
                           help="Do not include TGL.")
+    env.parser.add_option("--no-adl",
+                          action="store_false", 
+                          dest="adl", 
+                          help="Do not include ADL.")
     env.parser.add_option("--no-spr",
                           action="store_false", 
                           dest="spr", 
@@ -946,7 +958,10 @@ def xed_args(env):
                           action="store_true",
                           dest="enc2_test_checked",
                           help="Build the enc2 fast encoder *tests*. Test the checked interface. Longer build.")
-
+    env.parser.add_option("--encoder-chip", 
+                          action="store",
+                          dest="encoder_chip",
+                          help="Specific encoder chip. Default is ALL")
     env.parse_args(env['xed_defaults'])
 
 def init_once(env):
@@ -965,13 +980,11 @@ def init(env):
                 xbc.cdie("Cannot build with cygwin python. " +
                            "Please install win32 python")
             if mbuild.is_python3():
-                python_commands = [ 'c:/python37/python.exe',
-                                    'c:/python36/python.exe',
-                                    'c:/python35/python.exe' ]
+                vers = ['39', '38', '37', '36', '35']
+                python_commands = [ 'c:/python{}/python.exe'.format(x) for x in vers ]
             else:
-                python_commands = [ 'c:/python27/python.exe',
-                                    'c:/python26/python.exe',
-                                    'c:/python25/python.exe' ]
+                vers = ['27','26','25']
+                python_commands = [ 'c:/python{}/python.exe'.format(x) for x in vers ]
             python_command = None
             for p in python_commands:
                if os.path.exists(p):
@@ -981,7 +994,7 @@ def init(env):
                xbc.cdie("Could not find win32 python at these locations: %s" %
                           "\n\t" + "\n\t".join(python_commands))
                 
-    env['pythonarg'] = env.escape_string(python_command)
+    env['pythonarg'] = aq(python_command)
     if mbuild.verbose(2):
         mbuild.msgb("PYTHON", env['pythonarg'])
 
@@ -1284,15 +1297,15 @@ def _configure_libxed_extensions(env):
         newstuff.append( env['default_isa'] )
         
     if env['via_enabled']:
-        newstuff.append( env.src_dir_join(mbuild.join('datafiles',
+        newstuff.append( env.src_dir_join(mbuild.join('datafiles', 'via',
                                                       'files-via-padlock.cfg')))
 
     # add AMD stuff under knob control
     if env['amd_enabled']:
-        newstuff.append( env.src_dir_join(mbuild.join('datafiles',
+        newstuff.append( env.src_dir_join(mbuild.join('datafiles','amd',
                                                       'files-amd.cfg')))
         if env['avx']:
-            newstuff.append( env.src_dir_join(mbuild.join('datafiles',
+            newstuff.append( env.src_dir_join(mbuild.join('datafiles','amd',
                                                          'amdxop',
                                                          'files.cfg')))
 
@@ -1368,7 +1381,7 @@ def _configure_libxed_extensions(env):
             _add_normal_ext(env,'vnni')
         if env['cpx']:
             _add_normal_ext(env,'cpx')
-            _add_normal_ext(env,'bf16')
+            _add_normal_ext(env,'avx512-bf16')
         if env['knl']:
             _add_normal_ext(env,'knl')
         if env['knm']:
@@ -1406,18 +1419,29 @@ def _configure_libxed_extensions(env):
             _add_normal_ext(env,'cet')
             _add_normal_ext(env,'movdir')
             _add_normal_ext(env,'vp2intersect')
+            _add_normal_ext(env,'keylocker')
+        if env['adl']:
+            _add_normal_ext(env,'adl')
+            _add_normal_ext(env,'hreset')
+            _add_normal_ext(env,'avx-vnni')
+            _add_normal_ext(env,'keylocker')
         if env['spr']:
             _add_normal_ext(env,'spr')
-            _add_normal_ext(env,'pt')
+            _add_normal_ext(env,'hreset')
+            _add_normal_ext(env,'uintr')
+            _add_normal_ext(env,'cldemote')
+            _add_normal_ext(env,'avx-vnni')
+            _add_normal_ext(env,'amx-spr')
             _add_normal_ext(env,'waitpkg')
-            _add_normal_ext(env,'bf16')
+            _add_normal_ext(env,'avx512-bf16')
             _add_normal_ext(env,'enqcmd')
             _add_normal_ext(env,'tsx-ldtrk')
             _add_normal_ext(env,'serialize')
             
-        if env['future']: # now based on ICL
+        if env['future']: 
             _add_normal_ext(env,'future')
-            _add_normal_ext(env,'cldemote')
+            _add_normal_ext(env,'tdx')
+
 
 
         
@@ -1450,6 +1474,7 @@ def _remove_src_list(lst, list_to_remove):
 
 def add_encoder_command(env, gc, gen_dag, prep):
     enc_py = [ 'pysrc/read-encfile.py',
+               'pysrc/map_info_rdr.py',
                'pysrc/genutil.py', 'pysrc/encutil.py',
                'pysrc/verbosity.py', 'pysrc/patterns.py', 'pysrc/actions.py',
                'pysrc/operand_storage.py', 'pysrc/opnds.py', 'pysrc/ild_info.py',
@@ -1460,7 +1485,8 @@ def add_encoder_command(env, gc, gen_dag, prep):
                'pysrc/hashlin.py', 'pysrc/hashfks.py', 'pysrc/hashmul.py',
                'pysrc/func_gen.py', 'pysrc/refine_regs.py',
                'pysrc/slash_expand.py', 'pysrc/nt_func_gen.py',
-               'pysrc/scatter.py', 'pysrc/ins_emit.py']
+               'pysrc/scatter.py', 'pysrc/ins_emit.py',
+               'pysrc/chipmodel.py' ]
 
     enc_py = env.src_dir_join(enc_py)
     gc.enc_hash_file = env.build_dir_join('.mbuild.hash.xedencgen')
@@ -1542,6 +1568,7 @@ def add_encoder2_command(env, dag, input_files, config):
 
 def add_decoder_command(env, gc, gen_dag, prep):
     dec_py =['pysrc/generator.py',
+             'pysrc/map_info_rdr.py',
              'pysrc/actions.py', 'pysrc/genutil.py',
              'pysrc/ild_easz.py', 'pysrc/ild_codegen.py', 'pysrc/tup2int.py',
              'pysrc/encutil.py', 'pysrc/verbosity.py', 'pysrc/ild_eosz.py',
@@ -1549,9 +1576,9 @@ def add_decoder_command(env, gc, gen_dag, prep):
              'pysrc/actions_codegen.py', 'pysrc/patterns.py',
              'pysrc/operand_storage.py', 'pysrc/opnds.py', 'pysrc/hashlin.py',
              'pysrc/hashfks.py', 'pysrc/ild_info.py', 'pysrc/ild_cdict.py',
-             'pysrc/xed3_nt.py', 'pysrc/codegen.py', 'pysrc/ild_nt.py',
+             'pysrc/codegen.py', 'pysrc/ild_nt.py',
              'pysrc/hashmul.py', 'pysrc/enumer.py', 'pysrc/enum_txt_writer.py',
-             'pysrc/xed3_nt.py', 'pysrc/ild_disp.py', 'pysrc/ild_imm.py',
+             'pysrc/dec_dyn.py', 'pysrc/ild_disp.py', 'pysrc/ild_imm.py',
              'pysrc/ild_modrm.py', 'pysrc/ild_storage.py',
              'pysrc/slash_expand.py',
              'pysrc/chipmodel.py', 'pysrc/flag_gen.py', 'pysrc/opnd_types.py',
@@ -1578,7 +1605,7 @@ def add_decoder_command(env, gc, gen_dag, prep):
                        args=gc,
                        env=env,
                        input=dec_input_files,
-                       output= dd)
+                       output=dd)
     dec_cmd = gen_dag.add(env,c1)
 
 def wq_build(env,work_queue, dag):
@@ -1596,7 +1623,8 @@ def build_libxed(env,work_queue):
     # create object that will assemble our command line.
     gc = generator_inputs_t(env['build_dir'], 
                             env['amd_enabled'],
-                            env['limit_strings'])
+                            env['limit_strings'],
+                            env['encoder_chip'])
 
     # add individual extension files
     for ext_files in env['ext']:
@@ -1690,9 +1718,6 @@ def build_libxed(env,work_queue):
     if env['encoder']:
          for d in ['enc']:
              nongen_lib_sources.extend(_get_src(env,d))
-    if env['enc2']:
-         for d in ['enc2','enc2chk']:
-             nongen_lib_sources.extend(_get_src(env,d))
     if env['encoder'] and env['decoder']:
          nongen_lib_sources.extend(_get_src(env,'encdec'))
 
@@ -1776,7 +1801,6 @@ def build_libxedenc2(arg_env, work_queue, input_files, config):
     if not okay:
         xbc.cdie("[%s] failed. dying..." % phase)
 
-
     # The unchecked enc2 library
     lib, dll = xbc.make_lib_dll(env,'xed-{}'.format(config))
     x = mbuild.join(env['build_dir'], lib)
@@ -1789,10 +1813,11 @@ def build_libxedenc2(arg_env, work_queue, input_files, config):
 
     gen_src    = mbuild.glob(env['build_dir'],'src','*.c')
     hdr_dir    = mbuild.join(env['build_dir'],'hdr')
+    nongen_src = _get_src(env,'enc2')
     
     dag = mbuild.dag_t('xedenc2lib-{}'.format(config), env=env)
     env.add_include_dir(hdr_dir)
-    objs = env.compile( dag, gen_src)
+    objs = env.compile( dag, gen_src + nongen_src)
     if env['shared']:
         u = env.dynamic_lib(objs, env['shd_enc2_lib'])
     else:
@@ -1809,14 +1834,14 @@ def build_libxedenc2(arg_env, work_queue, input_files, config):
         env['shd_chk_lib']  = mbuild.join(env['build_dir'], dll_chk)
 
     gen_src    = mbuild.glob(env['build_dir'],'src-chk','*.c')
-    
-    objs = env.compile( dag, gen_src)
+    nongen_src = _get_src(env,'enc2chk')
+
+    objs = env.compile( dag, gen_src + nongen_src)
     if env['shared']:
         u = env.dynamic_lib(objs, env['shd_chk_lib'])
     else:
         u = env.static_lib(objs, env['link_chk_lib'])
     dag.add(env,u)
-
 
     
     okay = wq_build(env, work_queue, dag)
@@ -2530,7 +2555,7 @@ def _test_cmdline_decoder(env,osenv):
 def _run_canned_tests(env,osenv):
     """Run the tests from the tests subdirectory"""
     retval = 0 # success
-    env['test_dir'] = env.escape_string(mbuild.join(env['src_dir'],'tests'))
+    env['test_dir'] = aq(mbuild.join(env['src_dir'],'tests'))
     wkit = env['wkit']
     cmd = "%(python)s %(test_dir)s/run-cmd.py --build-dir {} ".format(wkit.bin)
 
@@ -2538,7 +2563,7 @@ def _run_canned_tests(env,osenv):
     if env['cet']:
         dirs.append('tests-cet')
     for d in dirs:
-        x  = env.escape_string(mbuild.join(env['test_dir'],d))
+        x  = aq(mbuild.join(env['test_dir'],d))
         cmd += " --tests %s " % (x)
 
     # add test restriction/subetting codes
@@ -2608,7 +2633,7 @@ def run_tests(env):
 
 def verify_args(env):
     if not env['avx']:
-        mbuild.warn("No AVX -> Disabling SNB, IVB, HSW, BDW, SKL, SKX, CLX, CPX, CNL, ICL, TGL, SPR, KNL, KNM Future\n\n\n")
+        mbuild.warn("No AVX -> Disabling SNB, IVB, HSW, BDW, SKL, SKX, CLX, CPX, CNL, ICL, TGL, ADL, SPR, KNL, KNM Future\n\n\n")
         env['ivb'] = False
         env['hsw'] = False
         env['bdw'] = False
@@ -2617,6 +2642,7 @@ def verify_args(env):
         env['clx'] = False
         env['cpx'] = False
         env['tgl'] = False
+        env['adl'] = False
         env['spr'] = False
         env['cnl'] = False
         env['icl'] = False
@@ -2667,7 +2693,8 @@ def verify_args(env):
         env['future'] = False
         
     if env['knc']: 
-        mbuild.warn("Disabling AVX512, FUTURE, for KNC build\n\n\n")
+        mbuild.warn("Disabling AMD, AVX512, FUTURE, for KNC build\n\n\n")
+        env['amd_enabled']=False
         env['knl'] = False
         env['knm'] = False
         env['skx'] = False
@@ -2677,6 +2704,8 @@ def verify_args(env):
         env['icl'] = False
         env['tgl'] = False
         env['spr'] = False
+        env['adl'] = False
+        env['cet'] = False
         env['future'] = False
         
     if env['use_elf_dwarf_precompiled']:

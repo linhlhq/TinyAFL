@@ -213,6 +213,13 @@ def on_windows():
   global _on_windows
   return _on_windows
 
+def on_mac(): 
+  """
+  @rtype: bool
+  @return: True iff on mac
+  """
+  global _on_mac
+  return _on_mac
 
 ######  
 

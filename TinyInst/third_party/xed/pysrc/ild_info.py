@@ -23,42 +23,63 @@
 ## The ild_info.py map information is really just the raw map names
 ##  in order as we all as an indicator for which maps are irregular.
 
-    
-#maps without AMD
-#it's important that maps are correctly ordered
-ild_maps = ['0x0', '0x0F', '0x0F38', '0x0F3A', 
-            'MAP4', 'MAP5', 'MAP6']
+import map_info_rdr    
 
-#0F0F is for AMD's 3dnow 0F0F instructions
-#it's important that maps are correctly ordered
-ild_maps_with_amd = ild_maps + ['0x0F0F','XMAP8','XMAP9','XMAPA']
+def get_maps(agi):
+    map_names = [ mi.map_name for mi in agi.map_info ]
+    return map_names
 
-#maps to dump in C header files. These are the irregular maps that
-#require complex handling.
-ild_dump_maps = ['0x0', '0x0F']
+def get_maps_max_id(agi):
+    return  max([mi.map_id for mi in agi.map_info])
 
-def get_maps(is_with_amd):
-    if is_with_amd:
-        return ild_maps_with_amd
-    return ild_maps
+def vexvalid_to_encoding_space(vv):
+    """Input number, output string"""
+    return map_info_rdr.vexvalid_to_encoding_space(vv)
+def encoding_space_to_vexvalid(space):
+    """Input string, output number"""
+    return map_info_rdr.encoding_space_to_vexvalid(space)
 
-#return maps that should be dumped in C header files.
-#Now it seems that only 0 and 0F maps should be dumped.
-def get_dump_maps():
-    return ild_dump_maps
 
+def get_maps_for_space(agi,vv):
+    encspace = vexvalid_to_encoding_space(vv)
+    maps = [ mi for mi in agi.map_info if mi.space == encspace ]
+    return maps
+
+
+def get_dump_maps_modrm(agi):
+    maps = []
+    for mi in agi.map_info:
+        if mi.has_variable_modrm():
+            maps.append(mi.map_name)
+    return maps
+
+def get_dump_maps_imm(agi):
+    maps = []
+    for mi in agi.map_info:
+        if mi.has_variable_imm():
+            maps.append(mi.map_name)
+    return maps
+        
+def get_dump_maps_disp(agi):
+    maps = []
+    for mi in agi.map_info:
+        if mi.has_variable_disp():
+            maps.append(mi.map_name)
+    return maps
 
 #10 is enough i think
 storage_priority = 10
                 
 
 class ild_info_t(object):
-    def __init__(self, insn_map=None, opcode=None, incomplete_opcode=None,
-                missing_bits=None, has_modrm=None, eosz_nt_seq=None,
-                easz_nt_seq=None,
-                imm_nt_seq=None, disp_nt_seq=None,ext_opcode=None, 
-                mode=None,
-                priority=storage_priority):
+    def __init__(self, vexvalid=None,
+                 insn_map=None, opcode=None, incomplete_opcode=None,
+                 missing_bits=None, has_modrm=None, eosz_nt_seq=None,
+                 easz_nt_seq=None,
+                 imm_nt_seq=None, disp_nt_seq=None,ext_opcode=None, 
+                 mode=None,
+                 priority=storage_priority):
+        self.vexvalid = vexvalid # numeric
         self.insn_map = insn_map
         self.opcode = opcode
         
@@ -101,6 +122,7 @@ class ild_info_t(object):
         self.priority = priority
         
     #This method is important because it defines which objects conflict
+    # NOTE: SKIPPING vexvalid field in comparison
     def __eq__(self, other):
         return (other != None and
                 self.insn_map == other.insn_map and
@@ -114,6 +136,7 @@ class ild_info_t(object):
                 self.disp_nt_seq == other.disp_nt_seq)
         
     #This method is not less important than __eq__
+    # NOTE: SKIPPING vexvalid field in comparison
     def __ne__(self, other):
         return (other == None or
                 self.insn_map != other.insn_map or
@@ -148,7 +171,9 @@ class ild_info_t(object):
 
 #convert pattern_t object to ild_info_t object
 def ptrn_to_info(pattern, prio=storage_priority):
-    return ild_info_t(insn_map=pattern.insn_map, opcode=pattern.opcode, 
+    return ild_info_t(vexvalid=pattern.get_vexvalid(),
+                      insn_map=pattern.insn_map,
+                      opcode=pattern.opcode, 
                       incomplete_opcode=pattern.incomplete_opcode, 
                       missing_bits=pattern.missing_bits, 
                       has_modrm=pattern.has_modrm, 

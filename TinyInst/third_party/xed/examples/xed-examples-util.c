@@ -565,9 +565,10 @@ void xed_decode_error( xed_uint64_t runtime_instruction_address,
 {
     char buf[XED_HEX_BUFLEN];
     printf("ERROR: %s Could not decode at offset: 0x" 
-           XED_FMT_LX " PC: 0x" XED_FMT_LX ": [", 
+           XED_FMT_LX " len: %d PC: 0x" XED_FMT_LX ": [", 
            xed_error_enum_t2str(xed_error),
            offset,
+           length,
            runtime_instruction_address);
 
     xed_print_hex_line(buf, ptr, length, XED_HEX_BUFLEN);
@@ -665,7 +666,8 @@ disas_decode_binary(xed_disas_info_t* di,
         return 1;
     }
     else {
-        xed_decode_error(0, 0, hex_decode_text, xed_error, 15);
+        xed_uint_t dec_length = xed_decoded_inst_get_length(xedd);
+        xed_decode_error(0, 0, hex_decode_text, xed_error, dec_length);
         return 0;
     }
 }
@@ -703,6 +705,7 @@ disas_decode_encode_binary(xed_disas_info_t* di,
         xed_encoder_request_t* enc_req = xedd; 
         // convert decode structure to proper encode structure
         xed_encoder_request_init_from_decode(xedd);
+        xed3_operand_set_encode_force(enc_req, di->encode_force);
         
         // encode it again...
         et1 = xed_get_time();
@@ -1326,6 +1329,7 @@ void xed_disas_test(xed_disas_info_t* di)
                                                ilim,
                                                &xedd, 
                                                runtime_instruction_address);
+
             okay = (olen != 0);
             if (!okay)  {
                 errors++;
@@ -1653,3 +1657,19 @@ xed_uint_t xed_str_list_size(xed_str_list_t* p) { //count chunks
     return c;
 }
 
+void xed_print_bytes_pseudo_op(const xed_uint8_t* array, unsigned int olen) {
+    unsigned int i;
+    printf(".byte ");
+    for(i=0;i<olen;i++) {
+        if (i>0)
+            printf(",");
+        printf("0x%02x",(xed_uint32_t)(array[i]));
+    }
+    printf("\n");
+}
+
+void xed_print_intel_asm_emit(const xed_uint8_t* array, unsigned int olen) {
+    unsigned int i;
+    for(i=0;i<olen;i++) 
+        printf("     __emit 0x%02x\n",(xed_uint32_t)(array[i]));
+}

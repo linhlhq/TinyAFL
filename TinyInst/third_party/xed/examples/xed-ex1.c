@@ -130,6 +130,15 @@ void print_misc(xed_decoded_inst_t* xedd) {
 
 }
 
+void print_branch_hints(xed_decoded_inst_t* xedd) {
+    if (xed_operand_values_branch_not_taken_hint(xedd)) 
+        printf("HINT: NOT TAKEN\n");
+    else if (xed_operand_values_branch_taken_hint(xedd)) 
+        printf("HINT: TAKEN\n");
+    else if (xed_operand_values_cet_no_track(xedd)) 
+        printf("CET NO-TRACK\n");
+}
+
 void print_attributes(xed_decoded_inst_t* xedd) {
     /* Walk the attributes. Generally, you'll know the one you want to
      * query and just access that one directly. */
@@ -373,6 +382,7 @@ void print_operands(xed_decoded_inst_t* xedd) {
           case XED_OPERAND_REG6:
           case XED_OPERAND_REG7:
           case XED_OPERAND_REG8:
+          case XED_OPERAND_REG9:
           case XED_OPERAND_BASE0:
           case XED_OPERAND_BASE1:
             {
@@ -579,7 +589,11 @@ int main(int argc, char** argv) {
     printf("iclass-max-iform-dispatch %u\n",
            xed_iform_max_per_iclass(xed_decoded_inst_get_iclass(&xedd)));
 
-
+    printf("Nominal opcode position %u\n",
+           xed3_operand_get_pos_nominal_opcode(&xedd));
+    printf("Nominal opcode 0x%02x\n",
+           xed3_operand_get_nominal_opcode(&xedd));
+    
     // operands
     print_operands(&xedd);
     
@@ -595,5 +609,7 @@ int main(int argc, char** argv) {
 
     // misc
     print_misc(&xedd);
+    print_branch_hints(&xedd);
+    
     return 0;
 }

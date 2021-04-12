@@ -15,6 +15,7 @@
 #  limitations under the License.
 #  
 #END_LEGAL
+import collections
 
 import ild_nt
 import ildutil
@@ -226,31 +227,22 @@ def is_constant_l2_func(nt_seq, nt_dict):
 
 _ordered_maps = ['']
 
-def _test_map_all_zero(vv,phash_map_lu):
-    """phash_map_lu is a dict[maps][0...255] pointing to a 2nd level lookup  """
-    all_zero_map = {}
-    for xmap in  list(phash_map_lu.keys()):
+def _test_map_all_zero(vv, phash_map_lu):
+    """phash_map_lu is a dict[maps][0...255] pointing to a 2nd level
+       lookup or it might be None indicating an empty map."""
+    all_zero_map= collections.defaultdict(bool) # Default False
+    for xmap in phash_map_lu.keys():
         omap = phash_map_lu[xmap]
-        all_zero=True
-        for i in range(0,256):
-            value = omap[hex(i)]
-            #mbuild.msgb("MAP VAL", "VV={} MAP={} OPCODE={} VALUE={}".format(
-            #    vv, xmap, i, value))
-            if value != '(xed3_find_func_t)0':
-                all_zero=False
-                break
-        if all_zero:
-            mbuild.msgb("ALL ZEROS", "VV={} MAP={}".format(vv, xmap))
+        if omap == None:
             all_zero_map[xmap]=True
-        else:
-            all_zero_map[xmap]=False
+            mbuild.msgb("ALL ZEROS", "VV={} MAP={}".format(vv, xmap))
     return all_zero_map
+            
 
-def dump_vv_map_lookup(agi,
-                       vv_lu,
-                       is_3dnow,
-                       op_lu_list,
-                       h_fn='xed3-phash.h'):
+def gen_static_decode(agi,
+                      vv_lu,
+                      op_lu_list,
+                      h_fn='xed3-phash.h'):
     """generate static decoder"""
     
     phash_headers = ['xed-ild-eosz-getters.h',
@@ -261,7 +253,7 @@ def dump_vv_map_lookup(agi,
     all_zero_by_map = {}
     for vv in sorted(vv_lu.keys()):
         (phash_map_lu, lu_fo_list) = vv_lu[vv]
-        all_zero_by_map[vv] =_test_map_all_zero(vv,phash_map_lu)
+        all_zero_by_map[vv] = _test_map_all_zero(vv, phash_map_lu)
 
         # dump a file w/prototypes and per-opcode functions pointed to
         # by the elements of the various 256-entry arrays.
@@ -276,7 +268,7 @@ def dump_vv_map_lookup(agi,
         name_pfx = 'xed3_phash_vv{}'.format(vv)
         elem_type = 'xed3_find_func_t'
 
-        dump_lookup(agi,                #dump the 256 entry array
+        dump_lookup(agi,  #dump 256-entry arrays for maps in this encspace
                     phash_map_lu,
                     name_pfx,
                     map_lu_cfn,
@@ -300,7 +292,6 @@ def dump_vv_map_lookup(agi,
                     elem_type, arr_name))
         h_file.close()                    
 
-
     #dump all the operand lookup functions in the list to a header file
     hdr = 'xed3-operand-lu.h'
     dump_flist_2_header(agi, hdr,
@@ -313,7 +304,6 @@ def dump_vv_map_lookup(agi,
                         is_private=False,
                         emit_headers=False)
 
-
     # write xed3-phash.h (top most thing).
     #
     # xed3-pash.h contains a table indexed by encoding-space &
@@ -325,52 +315,50 @@ def dump_vv_map_lookup(agi,
         h_file.add_header(header)
     h_file.start()
 
-    maps = ild_info.get_maps(is_3dnow)
+    maps = ild_info.get_maps(agi)
 
-    vv_num = [ int(x) for x in list(vv_lu.keys())]
-    vv_index = max(vv_num) + 1
-    map_num = len(maps)
+    vv_num = [ int(x) for x in vv_lu.keys() ]
+    vv_max = max(vv_num) + 1
+    max_maps = ild_info.get_maps_max_id(agi) + 1
     arr_name = 'xed3_phash_lu'
-    elem_type = 'xed3_find_func_t*'
-    h_file.add_code('#define XED_PHASH_MAP_LIMIT {}'.format(map_num))
-    h_file.add_code('const {} {}[{}][XED_PHASH_MAP_LIMIT] = {{'.format(
-        elem_type, arr_name, vv_index))
-    #vv is not sequential it may have holes
-    for vv in range(vv_index):
-        map_lus = []
-        #it's important that maps are correctly ordered
-        for imap in maps:
-            if vv in vv_num:
-                if all_zero_by_map[str(vv)][imap]:
-                    arr_name = '0'
+    h_file.add_code('#define XED_PHASH_MAP_LIMIT {}'.format(max_maps))
+    h_file.add_code('const xed3_find_func_t* {}[{}][XED_PHASH_MAP_LIMIT] = {{'.format(
+         arr_name, vv_max))
+
+    for vv in range(0,vv_max):
+        maps = ild_info.get_maps_for_space(agi,vv)
+        dmap = {mi.map_id:mi for mi in maps} # dict indexed by map_id
+
+        init_vals = ['0'] * max_maps 
+        for imap in range(0,max_maps):
+            if imap in dmap:
+                mi = dmap[imap]
+                # if there are maps without instructions, then there
+                # won't be top-level variables to look at for those
+                # maps.
+                if all_zero_by_map[str(vv)][mi.map_name]:
+                    init_vals[imap] = '0'
                 else:
-                    arr_name = _get_map_lu_name('xed3_phash_vv%d' % vv, imap)
-            else:
-                arr_name = '0'
-            map_lus.append(arr_name)
-        vv_arr_name = '{' + ', '.join(map_lus) + '},'
-        h_file.add_code(vv_arr_name)
+                    init_vals[imap] = _get_map_lu_name( 'xed3_phash_vv{}'.format(vv),
+                                                        mi.map_name )
+        h_file.add_code('{{ {} }},'.format(', '.join(init_vals)))
+
     h_file.add_code('};')
     h_file.close()
 
 def _get_map_lu_name(pfx, insn_map):
     return '%s_map_%s' % (pfx, insn_map)
 
-def dump_lookup(agi, l1_lookup, name_pfx, lu_h_fn, headers,
-                lu_elem_type, define_dict=None,
-                all_zero_by_map=None,
-                output_dir='include-private'):
-    """Dump the lookup tables - from opcode value to
-    the L1 function pointers (in most cases they are L2 function pointers,
-    which doesn't matter, because they have the same signature)
-    @param l1_lookup: 2D dict so that
-    l1_lookup[string(insn_map)][string(opcode)] == string(L1_function_name)
-    all 0..255 opcode values should be set in the dict, so that if 0x0,0x0F
-    map-opcode is illegal, then l1_lookup['0x0']['0x0F'] should be set
-    to some string indicating that L1 function is undefined.
-
-    all_zero_by_map is an optional dict[map] -> {True,False}. If False
-    skip emitting the map    """
+def dump_lookup_new(agi,
+                    l1_lookup,
+                    name_pfx,
+                    lu_h_fn,
+                    headers,
+                    lu_elem_type,
+                    define_dict=None,
+                    all_zero_by_map=None,
+                    output_dir='include-private'):
+    
     if output_dir:
         ofn = mbuild.join(output_dir,lu_h_fn)
     else:
@@ -383,20 +371,135 @@ def dump_lookup(agi, l1_lookup, name_pfx, lu_h_fn, headers,
     if define_dict:
         print_defines(h_file, define_dict)
 
+    array_names = _dump_lookup_low(agi,
+                                   h_file,
+                                   l1_lookup,
+                                   name_pfx,
+                                   lu_elem_type,
+                                   all_zero_by_map)
+
+    _dump_top_level_dispatch_array(agi,
+                                   h_file,
+                                   array_names,
+                                   'xed_ild_{}_table'.format(name_pfx),
+                                   lu_elem_type)
+    
+    h_file.close()
+
+
+def _dump_top_level_dispatch_array(agi,
+                                   h_file,
+                                   array_names,
+                                   emit_array_name,
+                                   sub_data_type):
+    vv_max = max( [ ild_info.encoding_space_to_vexvalid(mi.space)
+                    for mi in agi.map_info ] )
+    max_maps = ild_info.get_maps_max_id(agi) + 1
+    h_file.add_code('#if !defined(XED_MAP_ROW_LIMIT)')
+    h_file.add_code('# define XED_MAP_ROW_LIMIT {}'.format(max_maps))
+    h_file.add_code('#endif')
+    h_file.add_code('#if !defined(XED_VEXVALID_LIMIT)')
+    h_file.add_code('# define XED_VEXVALID_LIMIT {}'.format(vv_max+1))
+    h_file.add_code('#endif')
+    h_file.add_code('const {}* {}[XED_VEXVALID_LIMIT][XED_MAP_ROW_LIMIT] = {{'.format(
+                                                                            sub_data_type,
+                                                                            emit_array_name))
+
+    for vv in range(0,vv_max+1):
+        maps = ild_info.get_maps_for_space(agi,vv)
+        dmap = {mi.map_id:mi for mi in maps} # dict indexed by map_id
+
+        init_vals = ['0'] * max_maps 
+        for imap in range(0,max_maps):
+            if imap in dmap:
+                mi = dmap[imap]
+                if mi.map_name in array_names:
+                    init_vals[imap] = array_names[mi.map_name]
+        h_file.add_code('{{ {} }},'.format(', '.join(init_vals)))
+    h_file.add_code('};')
+
+    
+def dump_lookup(agi,
+                l1_lookup,
+                name_pfx,
+                lu_h_fn,
+                headers,
+                lu_elem_type,
+                define_dict=None,
+                all_zero_by_map=None,
+                output_dir='include-private'):
+    """Dump the lookup tables - from opcode value to
+    the L1 function pointers (in most cases they are L2 function pointers,
+    which doesn't matter, because they have the same signature)
+    @param l1_lookup: 2D dict so that
+    l1_lookup[string(insn_map)][string(opcode)] == string(L1_function_name)
+    all 0..255 opcode values should be set in the dict, so that if 0x0,0x0F
+    map-opcode is illegal, then l1_lookup['0x0']['0x0F'] should be set
+    to some string indicating that L1 function is undefined.
+
+    all_zero_by_map is an optional dict[map] -> {True,False}. If True
+    skip emitting the map.
+   
+    return a dictionary of the array names generated.   """
+    if output_dir:
+        ofn = mbuild.join(output_dir,lu_h_fn)
+    else:
+        ofn = lu_h_fn
+    h_file = agi.open_file(ofn, start=False)
+    for header in headers:
+        h_file.add_header(header)
+    h_file.start()
+
+    if define_dict:
+        print_defines(h_file, define_dict)
+
+    array_names = _dump_lookup_low(agi,
+                                   h_file,
+                                   l1_lookup,
+                                   name_pfx, 
+                                   lu_elem_type, 
+                                   all_zero_by_map)
+    h_file.close()
+    return array_names
+
+
+def _dump_lookup_low(agi,
+                     h_file,
+                     l1_lookup,
+                     name_pfx, 
+                     lu_elem_type, 
+                     all_zero_by_map=None):
+    """Dump the lookup tables - from opcode value to
+    the L1 function pointers (in most cases they are L2 function pointers,
+    which doesn't matter, because they have the same signature)
+    @param l1_lookup: 2D dict so that
+    l1_lookup[string(insn_map)][string(opcode)] == string(L1_function_name)
+    all 0..255 opcode values should be set in the dict, so that if 0x0,0x0F
+    map-opcode is illegal, then l1_lookup['0x0']['0x0F'] should be set
+    to some string indicating that L1 function is undefined.
+
+    all_zero_by_map is an optional dict[map] -> {True,False}. If True
+    skip emitting the map.
+   
+    return a dictionary of the array names generated.   """
+    array_names = {}
     for insn_map in sorted(l1_lookup.keys()):
         arr_name = _get_map_lu_name(name_pfx, insn_map)
         if all_zero_by_map==None or all_zero_by_map[insn_map]==False:
             ild_dump_map_array(l1_lookup[insn_map], arr_name,
                                lu_elem_type, h_file)
+        array_names[insn_map] = arr_name
+        
+    return array_names
 
-    h_file.close()
 
-def _gen_bymode_fun_dict(info_list, nt_dict, is_conflict_fun,
+def _gen_bymode_fun_dict(machine_modes, info_list, nt_dict, is_conflict_fun,
                         gen_l2_fn_fun):
     fun_dict = {}
     insn_map = info_list[0].insn_map
     opcode = info_list[0].opcode
-    for mode in ildutil.mode_space:
+
+    for mode in machine_modes:
         #get info objects with the same modrm.reg bits
         infos = list(filter(lambda info: mode in info.mode, info_list))
         if len(infos) == 0:
@@ -450,14 +553,12 @@ def _gen_byreg_fun_dict(info_list, nt_dict, is_conflict_fun,
     return fun_dict
 
 def _gen_intervals_dict(fun_dict):
-    """
-    If there are consequent keys that map to the same value, we want to unite
-    them to intervals in order to have less conditional branches in code.
-    For example if fun_dict is something like:
-    {0:f1, 1:f1, 2:f2, 3:f2 , ...}
-    we will generate dict
-    {(0,1):f1, (2,3,4,5,6,7):f2}
-    """
+    """If there are keys that map to the same value, we want to unite
+    them to intervals in order to have less conditional branches in
+    code.  For example if fun_dict is something like: 
+    {0:f1, 1:f1,  2:f2, 3:f2 , ...} then we will generate dict
+    {(0,1):f1, (2,3,4,5,6,7):f2} """
+    
     sorted_keys = sorted(fun_dict.keys())
     cur_int = [sorted_keys[0]]
     int_dict = {}
@@ -530,7 +631,7 @@ def gen_l1_byreg_resolution_function(agi,info_list, nt_dict, is_conflict_fun,
 
 def _add_int_dict_dispatching(fo, int_dict, dispatch_var, data_name):
     cond_starter = 'if'
-    for interval in list(int_dict.keys()):
+    for interval in int_dict.keys():
         min = interval[0]
         max = interval[-1]
         #avoid comparing unsigned int to 0, this leads to build errors
@@ -550,7 +651,7 @@ def _add_int_dict_dispatching(fo, int_dict, dispatch_var, data_name):
 
 def _add_switch_dispatching(fo, fun_dict, dispatch_var, data_name):
     fo.add_code("switch(%s) {" % dispatch_var)
-    for key in list(fun_dict.keys()):
+    for key in fun_dict.keys():
         fo.add_code('case %s:' % key)
         call_stmt = '%s(%s)' % (fun_dict[key], data_name)
         fo.add_code_eol(call_stmt)
@@ -568,8 +669,10 @@ def gen_l1_bymode_resolution_function(agi,info_list, nt_dict, is_conflict_fun,
     opcode = info_list[0].opcode
     ildutil.ild_warn('generating by mode fun_dict for opcode %s map %s' %
                           (opcode, insn_map))
-    fun_dict = _gen_bymode_fun_dict(info_list, nt_dict, is_conflict_fun,
-                        gen_l2_fn_fun)
+    machine_modes = agi.common.get_state_space_values('MODE')
+    fun_dict = _gen_bymode_fun_dict(machine_modes,
+                                    info_list, nt_dict, is_conflict_fun,
+                                    gen_l2_fn_fun)
     if not fun_dict:
         #it is not ild_err because we might have other conflict resolution
         #functions to try.
@@ -582,7 +685,7 @@ def gen_l1_bymode_resolution_function(agi,info_list, nt_dict, is_conflict_fun,
     #if not all modrm.reg values have legal instructions defined, we don't
     #have full 0-7 dict for modrm.reg here, and we can't generate the interval
     #dict
-    if len(list(fun_dict.keys())) == len(ildutil.mode_space):
+    if len(list(fun_dict.keys())) == len(machine_modes):
         int_dict = _gen_intervals_dict(fun_dict)
     else:
         int_dict = None

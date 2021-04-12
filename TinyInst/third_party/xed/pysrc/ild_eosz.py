@@ -33,7 +33,6 @@ _eosz_default_nt      = 'OSZ_NONTERM'
 _eosz_c_fn            = 'xed-ild-eosz.c'
 _eosz_header_fn       = 'xed-ild-eosz.h'
 
-harcoded_res_functions = {}
 
 #FIXME: I hope there are no conflicts on EOSZ in map,opcodes which
 #patterns have EOSZ as an operand decider.
@@ -210,7 +209,7 @@ def work(agi, united_lookup, eosz_nts, ild_gendir, debug):
     #and return EOSZ value (corresponding to EOSZ NT sequence 
     #that they represent) 
     getter_fos = []
-    for names in list(nt_seq_arrays.keys()):
+    for names in nt_seq_arrays.keys():
         arr = nt_seq_arrays[names]
         getter_fo = ild_codegen.gen_derived_operand_getter(agi, _eosz_token,
                                                            arr, list(names))
