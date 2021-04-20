@@ -1585,7 +1585,7 @@ DebuggerStatus Debugger::Continue(uint32_t timeout) {
 // initializes options from command line
 void Debugger::Init(int argc, char **argv) {
   have_thread_context = false;
-  sinkhole_stds = false;
+  sinkhole_stds = true;
   mem_limit = 0;
   cpu_aff = 0;
 

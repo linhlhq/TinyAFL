@@ -1647,9 +1647,9 @@ void TinyInst::InstrumentModule(ModuleInfo *module) {
   if (persist_instrumentation_data && module->instrumented) {
     ProtectCodeRanges(&module->executable_ranges);
     FixCrossModuleLinks(module);
-    printf("Module %s already instrumented, "
+    /*printf("Module %s already instrumented, "
            "reusing instrumentation data\n",
-           module->module_name.c_str());
+           module->module_name.c_str());*/
     return;
   }
 
@@ -1694,8 +1694,8 @@ void TinyInst::InstrumentModule(ModuleInfo *module) {
   module->instrumented = true;
   FixCrossModuleLinks(module);
 
-  printf("Instrumented module %s, code size: %zd\n",
-         module->module_name.c_str(), module->code_size);
+  /*printf("Instrumented module %s, code size: %zd\n",
+         module->module_name.c_str(), module->code_size);*/
 
   OnModuleInstrumented(module);
 }
