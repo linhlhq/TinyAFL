@@ -11570,6 +11570,8 @@ int main(int argc, char **argv){
 
 	file_extension = GetOption("-e", argc, argv);
 
+	out_file = GetOption("-f", argc, argv);
+
 	if (target_opt_ind == 0 || !in_dir || !out_dir || !target_module) usage(argv[0]);
 	
 	if (sync_id) fix_up_sync();

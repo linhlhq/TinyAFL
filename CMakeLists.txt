@@ -43,7 +43,6 @@ add_executable(afl-tmin
 
 target_link_libraries(afl-tmin tinyinst)
 
-
 project("AFL")
 
 add_executable(AFL
