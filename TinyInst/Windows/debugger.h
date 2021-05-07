@@ -36,6 +36,7 @@ class Debugger {
 public:
 
   virtual void Init(int argc, char **argv);
+  virtual void Init(int argc, char **argv, unsigned long long cpu_aff);
   DebuggerStatus Run(char *cmd, uint32_t timeout);
   DebuggerStatus Run(int argc, char **argv, uint32_t timeout);
   DebuggerStatus Kill();

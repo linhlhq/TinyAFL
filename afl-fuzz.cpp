@@ -443,6 +443,14 @@ void cook_coverage() {
 DebuggerStatus RunTarget(int argc, char **argv, unsigned int pid, uint32_t timeout) {
 	DebuggerStatus status;
 	total_execs++;
+
+	if (instrumentation->IsTargetFunctionDefined()) {
+		if (cur_iteration == num_iterations) {
+			instrumentation->Kill();
+			cur_iteration = 0;
+		}
+	}
+
 	// else clear only when the target function is reached
 	if (!instrumentation->IsTargetFunctionDefined()) {
 		instrumentation->ClearCoverage();
@@ -519,6 +527,7 @@ DebuggerStatus RunTarget(int argc, char **argv, unsigned int pid, uint32_t timeo
 			cur_iteration++;
 			if (cur_iteration == num_iterations) {
 				instrumentation->Kill();
+				cur_iteration = 0;
 			}
 		}
 		else {
@@ -810,7 +819,6 @@ u32 get_bit_idx(u64 mask) {
 
 
 void bind_to_free_cpu(void) {
-
 	u8 cpu_used[64];
 	u32 i = 0;
 	PROCESSENTRY32 process_entry;
@@ -820,20 +828,20 @@ void bind_to_free_cpu(void) {
 
 	if (cpu_core_count < 2) return;
 
-	/* Currently tinyafl doesn't support more than 64 cores */
-	if (cpu_core_count > 64) {
-		SAYF("\n" cLRD "[-] " cRST
-			"Uh-oh, looks like you have %u CPU cores on your system\n"
-			"    TinyAFL doesn't support more than 64 cores at the momement\n"
-			"    you can set AFL_NO_AFFINITY and try again.\n",
-			cpu_core_count);
-		FATAL("Too many cpus for automatic binding");
-	}
-
 	if (getenv("AFL_NO_AFFINITY")) {
 
 		WARNF("Not binding to a CPU core (AFL_NO_AFFINITY set).");
 		return;
+	}
+
+	/* Currently winafl doesn't support more than 64 cores */
+	if (cpu_core_count > 64) {
+		SAYF("\n" cLRD "[-] " cRST
+			"Uh-oh, looks like you have %u CPU cores on your system\n"
+			"    winafl doesn't support more than 64 cores at the moment\n"
+			"    you can set AFL_NO_AFFINITY and try again.\n",
+			cpu_core_count);
+		FATAL("Too many cpus for automatic binding");
 	}
 
 	if (!cpu_aff) {
@@ -2246,13 +2254,21 @@ void write_to_testcase(void* mem, u32 len) {
 		_unlink(out_file); /* ignore errors */
 		fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
 
-		if (fd < 0) {
+		u32 count = 0;
+
+		while (fd < 0) {
+
+			//if (count++ > 100) PFATAL("Unable to create '%s'", out_file);
+
 			SafeTerminateProcess();
-			_unlink(out_file); /* ignore errors */
+
+			_unlink(out_file); /* Ignore errors. */
+
 			fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
+
 			if (fd < 0) {
 				if (errno == EEXIST) {
-					fd = open(out_file, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
+					fd = _open(out_file, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
 					if (fd < 0) {
 						PFATAL("Unable to create '%s'", out_file);
 					}
@@ -2263,6 +2279,7 @@ void write_to_testcase(void* mem, u32 len) {
 			}
 		}
 
+
 	}
 	else _lseek(fd, 0, SEEK_SET);
 
@@ -2272,7 +2289,7 @@ void write_to_testcase(void* mem, u32 len) {
 
 		if (_chsize(fd, len)) PFATAL("ftruncate() failed");
 		_lseek(fd, 0, SEEK_SET);
-
+		//_close(fd);
 	}
 	else _close(fd);
 
@@ -2286,17 +2303,24 @@ void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
 	u32 tail_len = len - skip_at - skip_len;
 
 	if (out_file) {
-
 		_unlink(out_file); /* ignore errors */
-
 		fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
-		if (fd < 0) {
+
+		u32 count = 0;
+
+		while (fd < 0) {
+
+			//if (count++ > 100) PFATAL("Unable to create '%s'", out_file);
+
 			SafeTerminateProcess();
-			_unlink(out_file); /* ignore errors */
+
+			_unlink(out_file); /* Ignore errors. */
+
 			fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
+
 			if (fd < 0) {
 				if (errno == EEXIST) {
-					fd = open(out_file, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
+					fd = _open(out_file, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
 					if (fd < 0) {
 						PFATAL("Unable to create '%s'", out_file);
 					}
@@ -2306,6 +2330,7 @@ void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
 				}
 			}
 		}
+
 
 	}
 	else _lseek(fd, 0, SEEK_SET);
@@ -2354,6 +2379,7 @@ u8 calibrate_case(int argc, char** argv, struct queue_entry* q, u8* use_mem,
 
 	stage_name = "calibration";
 	stage_max = CAL_CYCLES;
+	stage_max = 3;
 
 
 	/* Make sure the forkserver is up before we do anything, and let's not
@@ -2377,7 +2403,7 @@ u8 calibrate_case(int argc, char** argv, struct queue_entry* q, u8* use_mem,
 		/* stop_soon is set by the handler for Ctrl+C. When it's pressed,
 		we want to bail out quickly. */
 		
-		if (stop_soon || fault != crash_mode)
+		if (stop_soon || (fault != crash_mode && fault != DEBUGGER_PROCESS_EXIT))
 		{
 			goto abort_calibration;
 		}
@@ -2403,6 +2429,7 @@ u8 calibrate_case(int argc, char** argv, struct queue_entry* q, u8* use_mem,
 
 						var_bytes[i] = 1;
 						stage_max = CAL_CYCLES_LONG;
+						stage_max = 8;
 
 					}
 
@@ -2515,12 +2542,13 @@ void perform_dry_run(int argc, char** argv) {
 
 		if (stop_soon) return;
 
-		if (res == crash_mode || res == DEBUGGER_NOBITS)
+		if (res == crash_mode || res == DEBUGGER_NOBITS || res == DEBUGGER_PROCESS_EXIT)
 			SAYF(cGRA "    len = %u, map size = %u, exec speed = %llu us\n" cRST,
 				q->len, q->bitmap_size, q->exec_us);
 
 		switch (res) {
 
+		case DEBUGGER_PROCESS_EXIT:
 		case DEBUGGER_TARGET_END:// none
 
 			if (q == queue) check_map_coverage();
@@ -3265,13 +3293,55 @@ u8 delete_files(u8* path, u8* prefix) {
 /* Get the number of runnable processes, with some simple smoothing. */
 
 double get_runnable_processes(void) {
-	PDH_FMT_COUNTERVALUE counterVal;
 
-	PdhCollectQueryData(cpuQuery);
-	PdhGetFormattedCounterValue(cpuTotal, PDH_FMT_DOUBLE, NULL, &counterVal);
-	return counterVal.doubleValue;
+	static double res;
+
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
+
+	/* I don't see any portable sysctl or so that would quickly give us the
+	   number of runnable processes; the 1-minute load average can be a
+	   semi-decent approximation, though. */
+
+	if (getloadavg(&res, 1) != 1) return 0;
+
+#else
+
+	/* On Linux, /proc/stat is probably the best way; load averages are
+	   computed in funny ways and sometimes don't reflect extremely short-lived
+	   processes well. */
+
+	FILE* f = fopen("\\proc\\stat", "r");
+	u8 tmp[1024];
+	u32 val = 0;
+
+	if (!f) return 0;
+
+	while (fgets(tmp, sizeof(tmp), f)) {
+
+		if (!strncmp(tmp, "procs_running ", 14) ||
+			!strncmp(tmp, "procs_blocked ", 14)) val += atoi(tmp + 14);
+
+	}
+
+	fclose(f);
+
+	if (!res) {
+
+		res = val;
+
+	}
+	else {
+
+		res = res * (1.0 - 1.0 / AVG_SMOOTHING) +
+			((double)val) * (1.0 / AVG_SMOOTHING);
+
+	}
+
+#endif /* ^(__APPLE__ || __FreeBSD__ || __OpenBSD__) */
+
+	return res;
+
 }
-
 
 /* Delete the temporary directory used for in-place session resume. */
 
@@ -11178,45 +11248,195 @@ void setup_stdio_file(void) {
 
 }
 
+/* Make sure that core dumps don't go to a program. */
+
+static void check_crash_handling(void) {
+
+#ifdef __APPLE__
+
+	/* Yuck! There appears to be no simple C API to query for the state of
+	   loaded daemons on MacOS X, and I'm a bit hesitant to do something
+	   more sophisticated, such as disabling crash reporting via Mach ports,
+	   until I get a box to test the code. So, for now, we check for crash
+	   reporting the awful way. */
+
+	if (system("launchctl list 2>\\dev\\null | grep -q '\\.ReportCrash$'")) return;
+
+	SAYF("\n" cLRD "[-] " cRST
+		"Whoops, your system is configured to forward crash notifications to an\n"
+		"    external crash reporting utility. This will cause issues due to the\n"
+		"    extended delay between the fuzzed binary malfunctioning and this fact\n"
+		"    being relayed to the fuzzer via the standard waitpid() API.\n\n"
+		"    To avoid having crashes misinterpreted as timeouts, please run the\n"
+		"    following commands:\n\n"
+
+		"    SL=\\System\\Library; PL=com.apple.ReportCrash\n"
+		"    launchctl unload -w ${SL}\\LaunchAgents\\${PL}.plist\n"
+		"    sudo launchctl unload -w ${SL}\\LaunchDaemons\\${PL}.Root.plist\n");
+
+	if (!getenv("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES"))
+		FATAL("Crash reporter detected");
+
+#else
+
+	/* This is Linux specific, but I don't think there's anything equivalent on
+	   *BSD, so we can just let it slide for now. */
+
+	s32 fd = open("\\proc\\sys\\kernel\\core_pattern", O_RDONLY | O_BINARY);
+	u8  fchar;
+
+	if (fd < 0) return;
+
+	ACTF("Checking core_pattern...");
+
+	if (read(fd, &fchar, 1) == 1 && fchar == '|') {
+
+		SAYF("\n" cLRD "[-] " cRST
+			"Hmm, your system is configured to send core dump notifications to an\n"
+			"    external utility. This will cause issues due to an extended delay\n"
+			"    between the fuzzed binary malfunctioning and this information being\n"
+			"    eventually relayed to the fuzzer via the standard waitpid() API.\n\n"
+
+			"    To avoid having crashes misinterpreted as timeouts, please log in as root\n"
+			"    and temporarily modify \\proc\\sys\\kernel\\core_pattern, like so:\n\n"
+
+			"    echo core >\\proc\\sys\\kernel\\core_pattern\n");
+
+		if (!getenv("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES"))
+			FATAL("Pipe at the beginning of 'core_pattern'");
+
+	}
+
+	close(fd);
+
+#endif /* ^__APPLE__ */
+
+}
+
+
+/* Check CPU governor. */
+
+static void check_cpu_governor(void) {
+
+	FILE* f;
+	u8 tmp[128];
+	u64 min = 0, max = 0;
+
+	if (getenv("AFL_SKIP_CPUFREQ")) return;
+
+	f = fopen("\\sys\\devices\\system\\cpu\\cpu0\\cpufreq\\scaling_governor", "r");
+	if (!f) return;
+
+	ACTF("Checking CPU scaling governor...");
+
+	if (!fgets(tmp, 128, f)) PFATAL("fgets() failed");
+
+	fclose(f);
+
+	if (!strncmp(tmp, "perf", 4)) return;
+
+	f = fopen("\\sys\\devices\\system\\cpu\\cpu0\\cpufreq\\scaling_min_freq", "r");
+
+	if (f) {
+		if (fscanf(f, "%llu", &min) != 1) min = 0;
+		fclose(f);
+	}
+
+	f = fopen("\\sys\\devices\\system\\cpu\\cpu0\\cpufreq\\scaling_max_freq", "r");
+
+	if (f) {
+		if (fscanf(f, "%llu", &max) != 1) max = 0;
+		fclose(f);
+	}
+
+	if (min == max) return;
+
+	SAYF("\n" cLRD "[-] " cRST
+		"Whoops, your system uses on-demand CPU frequency scaling, adjusted\n"
+		"    between %llu and %llu MHz. Unfortunately, the scaling algorithm in the\n"
+		"    kernel is imperfect and can miss the short-lived processes spawned by\n"
+		"    afl-fuzz. To keep things moving, run these commands as root:\n\n"
+
+		"    cd \\sys\\devices\\system\\cpu\n"
+		"    echo performance | tee cpu*\\cpufreq\\scaling_governor\n\n"
+
+		"    You can later go back to the original state by replacing 'performance' with\n"
+		"    'ondemand'. If you don't want to change the settings, set AFL_SKIP_CPUFREQ\n"
+		"    to make afl-fuzz skip this check - but expect some performance drop.\n",
+		min / 1024, max / 1024);
+
+	FATAL("Suboptimal CPU scaling governor");
+
+}
+
 
 /* Count the number of logical CPU cores. */
 
 void get_core_count(void) {
 
-	double cur_runnable = 0;
+	u32 cur_runnable = 0;
 
-	cpu_core_count = atoi(getenv("NUMBER_OF_PROCESSORS"));
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
 
-	if (cpu_core_count > 0) {
+	size_t s = sizeof(cpu_core_count);
 
-		/* initialize PDH */
+	/* On *BSD systems, we can just use a sysctl to get the number of CPUs. */
 
-		PdhOpenQuery(NULL, NULL, &cpuQuery);
-		PdhAddCounter(cpuQuery, TEXT("\\Processor(_Total)\\% Processor Time"), NULL, &cpuTotal);
-		PdhCollectQueryData(cpuQuery);
+#ifdef __APPLE__
 
-		cur_runnable = get_runnable_processes();
+	if (sysctlbyname("hw.logicalcpu", &cpu_core_count, &s, NULL, 0) < 0)
+		return;
 
-		OKF("You have %u CPU cores and utilization %0.0f%%.",
-			cpu_core_count, cur_runnable);
+#else
+
+	int s_name[2] = { CTL_HW, HW_NCPU };
+
+	if (sysctl(s_name, 2, &cpu_core_count, &s, NULL, 0) < 0) return;
+
+#endif /* ^__APPLE__ */
+
+#else
+	/* On Linux, a simple way is to look at /proc/stat, especially since we'd
+	   be parsing it anyway for other reasons later on. */
+
+	SYSTEM_INFO sys_info = { 0 };
+	GetSystemInfo(&sys_info);
+	cpu_core_count = sys_info.dwNumberOfProcessors;
+
+#endif /* ^(__APPLE__ || __FreeBSD__ || __OpenBSD__) */
+
+	if (cpu_core_count) {
+
+		cur_runnable = (u32)get_runnable_processes();
+
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
+
+		/* Add ourselves, since the 1-minute average doesn't include that yet. */
+
+		cur_runnable++;
+
+#endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
+
+		OKF("You have %u CPU cores and %u runnable tasks (utilization: %0.0f%%).",
+			cpu_core_count, cur_runnable, cur_runnable * 100.0 / cpu_core_count);
 
 		if (cpu_core_count > 1) {
 
-			if (cur_runnable >= 90.0) {
+			if (cur_runnable > cpu_core_count * 1.5) {
 
 				WARNF("System under apparent load, performance may be spotty.");
+
+			}
+			else if (cur_runnable + 1 <= cpu_core_count) {
+
+				OKF("Try parallel jobs - see %s\\parallel_fuzzing.txt.", doc_path);
 
 			}
 
 		}
 
 	}
-	else {
-
-		cpu_core_count = 0;
-		WARNF("Unable to figure out the number of CPU cores.");
-
-	}
+	else WARNF("Unable to figure out the number of CPU cores.");
 
 }
 
@@ -11309,6 +11529,33 @@ void detect_file_args(int argc, char** argv) {
 
 }
 
+/* Make a copy of the current command line. */
+
+static void save_cmdline(u32 argc, char** argv) {
+
+	u32 len = 1, i;
+	u8* buf;
+
+	for (i = 0; i < argc; i++)
+		len += strlen(argv[i]) + 1;
+
+	buf = orig_cmdline = (u8*)ck_alloc(len);
+
+	for (i = 0; i < argc; i++) {
+
+		u32 l = strlen(argv[i]);
+
+		memcpy(buf, argv[i], l);
+		buf += l;
+
+		if (i != argc - 1) *(buf++) = ' ';
+
+	}
+
+	*buf = 0;
+
+}
+
 
 int main(int argc, char **argv){
 
@@ -11332,7 +11579,6 @@ int main(int argc, char **argv){
 	SAYF("Based on AFL " cBRI AFL_VERSION cRST " by <lcamtuf@google.com>\n");
 	doc_path = "docs";
 	srand(GetTickCount() ^ GetCurrentProcessId());
-
 	instrumentation = new LiteCov();
 	instrumentation->Init(argc, argv);
 
@@ -11594,21 +11840,26 @@ int main(int argc, char **argv){
 	case MMOPT:	  OKF("Using modified MOpt power schedule (MMOPT)"); break;
 	default: FATAL("Unkown power schedule"); break;
 	}
-	
+
+	save_cmdline(argc, argv);
+
 	fix_up_banner(target_module);
-
+	
 	get_core_count();
-
 	bind_to_free_cpu();
+	check_crash_handling();
+	check_cpu_governor();
 
 	setup_shm();
+	
 	child_handle = NULL;
 	pipe_handle = NULL;
 	init_count_class16();
-
+	
 	setup_dirs_fds();
 	read_testcases();
 	load_auto();
+	
 
 	pivot_inputs();
 	if (extras_dir) load_extras(extras_dir);
@@ -11619,7 +11870,7 @@ int main(int argc, char **argv){
 	if (!out_file) setup_stdio_file();
 
 	start_time = get_cur_time();
-
+	//RunTarget(target_argc, target_argv, 0, 0xFFFFFFFF);
 	perform_dry_run(target_argc, target_argv);
 
 	cull_queue();

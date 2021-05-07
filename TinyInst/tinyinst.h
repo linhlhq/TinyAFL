@@ -44,6 +44,7 @@ typedef struct xed_decoded_inst_s xed_decoded_inst_t;
 class TinyInst : public Debugger {
 public:
   virtual void Init(int argc, char **argv) override;
+  virtual void Init(int argc, char **argv, unsigned long long cpu_aff) override;
 
   void EnableInstrumentation() {
     instrumentation_disabled = false;

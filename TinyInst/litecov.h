@@ -74,6 +74,7 @@ public:
 class LiteCov : public TinyInst {
 public:
   virtual void Init(int argc, char **argv) override;
+  virtual void Init(int argc, char **argv, unsigned long long cpu_aff) override;
 
   void GetCoverage(Coverage &coverage, bool clear_coverage);
   void ClearCoverage();

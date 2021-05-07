@@ -1883,3 +1883,47 @@ void TinyInst::Init(int argc, char **argv) {
       FATAL("Unknown indirect instrumentation mode");
   }
 }
+
+void TinyInst::Init(int argc, char** argv, unsigned long long cpu_aff) {
+    // init the debugger first
+    Debugger::Init(argc, argv, cpu_aff);
+
+    instrumentation_disabled = false;
+
+    instrument_modules_on_load = GetBinaryOption("-instrument_modules_on_load", argc, argv, false);
+    patch_return_addresses = GetBinaryOption("-patch_return_addresses", argc, argv, false);
+    instrument_cross_module_calls = GetBinaryOption("-instrument_cross_module_calls", argc, argv, true);
+    persist_instrumentation_data = GetBinaryOption("-persist_instrumentation_data", argc, argv, true);
+
+    trace_basic_blocks = GetBinaryOption("-trace_basic_blocks", argc, argv, false);
+    trace_module_entries = GetBinaryOption("-trace_module_entries", argc, argv, false);
+
+    sp_offset = GetIntOption("-stack_offset", argc, argv, 0);
+
+    xed_tables_init();
+
+    list <char*> module_names;
+    GetOptionAll("-instrument_module", argc, argv, &module_names);
+    for (auto iter = module_names.begin(); iter != module_names.end(); iter++) {
+        ModuleInfo* new_module = new ModuleInfo();
+        new_module->module_name = *iter;
+        instrumented_modules.push_back(new_module);
+    }
+
+    char* option;
+
+    indirect_instrumentation_mode = II_AUTO;
+    option = GetOption("-indirect_instrumentation", argc, argv);
+    if (option) {
+        if (strcmp(option, "none") == 0)
+            indirect_instrumentation_mode = II_NONE;
+        else if (strcmp(option, "local") == 0)
+            indirect_instrumentation_mode = II_LOCAL;
+        else if (strcmp(option, "global") == 0)
+            indirect_instrumentation_mode = II_GLOBAL;
+        else if (strcmp(option, "auto") == 0)
+            indirect_instrumentation_mode = II_AUTO;
+        else
+            FATAL("Unknown indirect instrumentation mode");
+    }
+}

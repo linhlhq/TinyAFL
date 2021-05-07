@@ -72,6 +72,29 @@ void LiteCov::Init(int argc, char **argv) {
   }
 }
 
+void LiteCov::Init(int argc, char** argv, unsigned long long cpu_aff) {
+    TinyInst::Init(argc, argv, cpu_aff);
+
+    coverage_type = COVTYPE_BB;
+    char* option = GetOption("-covtype", argc, argv);
+    if (option) {
+        if (strcmp(option, "bb") == 0)
+            coverage_type = COVTYPE_BB;
+        else if (strcmp(option, "edge") == 0)
+            coverage_type = COVTYPE_EDGE;
+        else
+            FATAL("Unknown coverage type");
+    }
+
+    compare_coverage = GetBinaryOption("-cmp_coverage", argc, argv, false);
+
+    for (auto iter = instrumented_modules.begin();
+        iter != instrumented_modules.end(); iter++) {
+        ModuleInfo* module = *iter;
+        module->client_data = new ModuleCovData();
+    }
+}
+
 void LiteCov::OnModuleInstrumented(ModuleInfo *module) {
   ModuleCovData *data = (ModuleCovData *)module->client_data;
 
