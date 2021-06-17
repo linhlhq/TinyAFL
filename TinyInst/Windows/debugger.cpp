@@ -983,6 +983,12 @@ void Debugger::HandleTargetEnded() {
   HANDLE thread_handle = OpenThread(THREAD_ALL_ACCESS, FALSE, thread_id);
   GetThreadContext(thread_handle, &lcContext);
 
+#ifdef _WIN64
+  target_return_value = (uint64_t)lcContext.Rax;
+#else
+  target_return_value = (uint64_t)lcContext.Eax;
+#endif
+
   if (loop_mode) {
     // restore params
 #ifdef _WIN64
@@ -1530,8 +1536,38 @@ DebuggerStatus Debugger::Attach(unsigned int pid, uint32_t timeout) {
   attach_mode = true;
 
   if (!DebugActiveProcess(pid)) {
-    FATAL("Could not attach to the process.\n"
-          "Make sure the process exists and you have permissions to debug it.\n");
+    DWORD error_code = GetLastError();
+    
+
+    if(error_code == 5) {
+      HANDLE hToken = NULL;
+      LUID luid;
+      TOKEN_PRIVILEGES tp;
+      
+      if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        FATAL("OpenProcessToken() failed, error code = %d\n", GetLastError());
+      }
+      
+      if(!LookupPrivilegeValueA(NULL, "SeDebugPrivilege", &luid)) {
+        FATAL("LookupPrivilegeValueA() failed, error code = %d\n", GetLastError());
+      }
+      
+      tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+      tp.Privileges[0].Luid = luid;
+      tp.PrivilegeCount = 1;
+      
+      if(!AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL)) {
+        FATAL("AdjustTokenPrivileges() failed, error code = %d\n", GetLastError());
+      }
+      
+      if(!DebugActiveProcess(pid)) {
+        FATAL("Could not attach to the process.\n"
+              "Make sure the process exists and you have permissions to debug it.\n");
+      }
+      
+    } else {
+      FATAL("DebugActiveProcess() failed, error code = %d\n", error_code);
+    }
   }
 
   dbg_last_status = DEBUGGER_ATTACHED;
@@ -1594,6 +1630,8 @@ void Debugger::Init(int argc, char **argv) {
   loop_mode = false;
   target_function_defined = false;
 
+  target_return_value = 0;
+
   child_handle = NULL;
   child_thread_handle = NULL;
 
@@ -1606,32 +1644,6 @@ void Debugger::Init(int argc, char **argv) {
   target_address = NULL;
 
   char *option;
-
-  option = NULL;
-  option = GetOption("-m", argc, argv);
-  if (option != NULL) {
-      if (!strcmp(option, "none")) {
-          mem_limit = 0;
-      }
-      else {
-          char suffix = 'M';
-          if (sscanf(option, "%llu%c", &mem_limit, &suffix) < 1 ||
-              option[0] == '-') FATAL("Bad syntax used for -m");
-
-          switch (suffix) {
-
-          case 'T': mem_limit *= 1024 * 1024; break;
-          case 'G': mem_limit *= 1024; break;
-          case 'k': mem_limit /= 1024; break;
-          case 'M': break;
-
-          default:  FATAL("Unsupported suffix or bad syntax for -m");
-
-          }
-
-          if (mem_limit < 5) FATAL("Dangerously low value of -m");
-      }
-  }
 
   trace_debug_events = GetBinaryOption("-trace_debug_events",
                                        argc, argv,
@@ -1685,107 +1697,4 @@ void Debugger::Init(int argc, char **argv) {
   SYSTEM_INFO system_info;
   GetSystemInfo(&system_info);
   allocation_granularity = system_info.dwAllocationGranularity;
-}
-
-// initializes options from command line
-void Debugger::Init(int argc, char** argv, unsigned long long cpu_aff) {
-    have_thread_context = false;
-    sinkhole_stds = true;
-    mem_limit = 0;
-    cpu_aff = cpu_aff;
-
-    attach_mode = false;
-    trace_debug_events = false;
-    loop_mode = false;
-    target_function_defined = false;
-
-    child_handle = NULL;
-    child_thread_handle = NULL;
-
-    target_module[0] = 0;
-    target_method[0] = 0;
-    target_offset = 0;
-    saved_args = NULL;
-    target_num_args = 0;
-    calling_convention = CALLCONV_DEFAULT;
-    target_address = NULL;
-
-    char* option;
-
-    option = NULL;
-    option = GetOption("-m", argc, argv);
-    if (!strcmp(option, "none")) {
-        mem_limit = 0;
-    }
-    else {
-        char suffix = 'M';
-        if (sscanf(option, "%llu%c", &mem_limit, &suffix) < 1 ||
-            option[0] == '-') FATAL("Bad syntax used for -m");
-
-        switch (suffix) {
-
-        case 'T': mem_limit *= 1024 * 1024; break;
-        case 'G': mem_limit *= 1024; break;
-        case 'k': mem_limit /= 1024; break;
-        case 'M': break;
-
-        default:  FATAL("Unsupported suffix or bad syntax for -m");
-
-        }
-
-        if (mem_limit < 5) FATAL("Dangerously low value of -m");
-    }
-
-    trace_debug_events = GetBinaryOption("-trace_debug_events",
-        argc, argv,
-        trace_debug_events);
-
-    option = GetOption("-target_module", argc, argv);
-    if (option) target_module = option;
-
-    option = GetOption("-target_method", argc, argv);
-    if (option) target_method = option;
-
-    loop_mode = GetBinaryOption("-loop", argc, argv, loop_mode);
-
-    option = GetOption("-nargs", argc, argv);
-    if (option) target_num_args = atoi(option);
-
-    option = GetOption("-target_offset", argc, argv);
-    if (option) target_offset = strtoul(option, NULL, 0);
-
-    option = GetOption("-callconv", argc, argv);
-    if (option) {
-        if (strcmp(option, "stdcall") == 0)
-            calling_convention = CALLCONV_CDECL;
-        else if (strcmp(option, "fastcall") == 0)
-            calling_convention = CALLCONV_FASTCALL;
-        else if (strcmp(option, "thiscall") == 0)
-            calling_convention = CALLCONV_THISCALL;
-        else if (strcmp(option, "ms64") == 0)
-            calling_convention = CALLCONV_MICROSOFT_X64;
-        else
-            FATAL("Unknown calling convention");
-    }
-
-    // check if we are running in persistence mode
-    if (target_module[0] || target_offset || target_method[0]) {
-        target_function_defined = true;
-        if ((target_module[0] == 0) || ((target_offset == 0) && (target_method[0] == 0))) {
-            FATAL("target_module and either target_offset or target_method must be specified together\n");
-        }
-    }
-
-    if (loop_mode && !target_function_defined) {
-        FATAL("Target function needs to be defined to use the loop mode\n");
-    }
-
-    if (target_num_args) {
-        saved_args = (void**)malloc(target_num_args * sizeof(void*));
-    }
-
-    // get allocation granularity
-    SYSTEM_INFO system_info;
-    GetSystemInfo(&system_info);
-    allocation_granularity = system_info.dwAllocationGranularity;
 }

@@ -44,6 +44,7 @@ based on the initially observed behavior).
 #include "hash.h"
 
 #define CASE_PREFIX "id_"
+#define MAX_SAMPLE_SIZE 1000000
 
 /*start setup variable for afl-mopt*/
 u64 limit_time_puppet = 0;
@@ -128,7 +129,6 @@ HANDLE child_handle, hnul;
 u8 *target_module;
 u8 *file_extension;
 
-
 u8 *in_dir,                    /* Input directory with test cases  */
 	*out_file,                  /* File to fuzz, if any             */
 	*out_dir,                   /* Working & output directory       */
@@ -193,8 +193,7 @@ u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
 HANDLE shm_handle;             /* Handle of the SHM region         */
 HANDLE pipe_handle;            /* Handle of the name pipe          */
-char   *fuzzer_id = NULL;      /* The fuzzer ID or a randomized
-									  seed allowing multiple instances */
+char   *fuzzer_id = NULL;      /* The fuzzer ID or a randomized seed allowing multiple instances */
 
 volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
 			clear_screen = 1,  /* Window resized?                  */
@@ -819,6 +818,7 @@ u32 get_bit_idx(u64 mask) {
 
 
 void bind_to_free_cpu(void) {
+
 	u8 cpu_used[64];
 	u32 i = 0;
 	PROCESSENTRY32 process_entry;
@@ -828,20 +828,20 @@ void bind_to_free_cpu(void) {
 
 	if (cpu_core_count < 2) return;
 
+	/* Currently tinyafl doesn't support more than 64 cores */
+	if (cpu_core_count > 64) {
+		SAYF("\n" cLRD "[-] " cRST
+			"Uh-oh, looks like you have %u CPU cores on your system\n"
+			"    TinyAFL doesn't support more than 64 cores at the momement\n"
+			"    you can set AFL_NO_AFFINITY and try again.\n",
+			cpu_core_count);
+		FATAL("Too many cpus for automatic binding");
+	}
+
 	if (getenv("AFL_NO_AFFINITY")) {
 
 		WARNF("Not binding to a CPU core (AFL_NO_AFFINITY set).");
 		return;
-	}
-
-	/* Currently winafl doesn't support more than 64 cores */
-	if (cpu_core_count > 64) {
-		SAYF("\n" cLRD "[-] " cRST
-			"Uh-oh, looks like you have %u CPU cores on your system\n"
-			"    winafl doesn't support more than 64 cores at the moment\n"
-			"    you can set AFL_NO_AFFINITY and try again.\n",
-			cpu_core_count);
-		FATAL("Too many cpus for automatic binding");
 	}
 
 	if (!cpu_aff) {
@@ -1408,7 +1408,6 @@ void remove_shm(void) {
 	if (!trace_bits) {
 		ck_free(trace_bits);
 	}
-
 }
 
 /* Compact trace bytes into a smaller bitmap. We effectively just drop the
@@ -1596,8 +1595,6 @@ void cull_queue(void) {
 	}
 
 }
-
-
 
 void setup_shm(void) {
 
@@ -2298,55 +2295,11 @@ void write_to_testcase(void* mem, u32 len) {
 /* The same, but with an adjustable gap. Used for trimming. */
 
 void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
-
-	s32 fd = out_fd;
-	u32 tail_len = len - skip_at - skip_len;
-
-	if (out_file) {
-		_unlink(out_file); /* ignore errors */
-		fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
-
-		u32 count = 0;
-
-		while (fd < 0) {
-
-			//if (count++ > 100) PFATAL("Unable to create '%s'", out_file);
-
-			SafeTerminateProcess();
-
-			_unlink(out_file); /* Ignore errors. */
-
-			fd = _open(out_file, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, 0600);
-
-			if (fd < 0) {
-				if (errno == EEXIST) {
-					fd = _open(out_file, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
-					if (fd < 0) {
-						PFATAL("Unable to create '%s'", out_file);
-					}
-				}
-				else {
-					PFATAL("Unable to create '%s'", out_file);
-				}
-			}
-		}
-
-
-	}
-	else _lseek(fd, 0, SEEK_SET);
-
-	if (skip_at) ck_write(fd, mem, skip_at, out_file);
-
-	if (tail_len) ck_write(fd, (u8*)mem + skip_at + skip_len, tail_len, out_file);
-
-	if (!out_file) {
-
-		if (_chsize(fd, len - skip_len)) PFATAL("ftruncate() failed");
-		_lseek(fd, 0, SEEK_SET);
-
-	}
-	else _close(fd);
-
+	char* trimmed_mem = (char*)malloc(len - skip_len);
+	memcpy(trimmed_mem, mem, skip_at); //copy start
+	memcpy(trimmed_mem + skip_at, (char*)mem + skip_at + skip_len, len - (skip_at + skip_len));
+	write_to_testcase(trimmed_mem, len - skip_len);
+	free(trimmed_mem);
 }
 
 void show_stats(void);
@@ -11229,7 +11182,6 @@ void setup_dirs_fds(void) {
 /* Setup the output file for fuzzed data, if not using -f. */
 
 void setup_stdio_file(void) {
-
 	u8* fn = NULL;
 	if (file_extension) {
 		fn = alloc_printf("%s\\.cur_input.%s", out_dir, file_extension);
@@ -11374,69 +11326,40 @@ static void check_cpu_governor(void) {
 
 void get_core_count(void) {
 
-	u32 cur_runnable = 0;
+	double cur_runnable = 0;
 
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
+	cpu_core_count = atoi(getenv("NUMBER_OF_PROCESSORS"));
 
-	size_t s = sizeof(cpu_core_count);
+	if (cpu_core_count > 0) {
 
-	/* On *BSD systems, we can just use a sysctl to get the number of CPUs. */
+		/* initialize PDH */
 
-#ifdef __APPLE__
+		PdhOpenQuery(NULL, NULL, &cpuQuery);
+		PdhAddCounter(cpuQuery, TEXT("\\Processor(_Total)\\% Processor Time"), NULL, &cpuTotal);
+		PdhCollectQueryData(cpuQuery);
 
-	if (sysctlbyname("hw.logicalcpu", &cpu_core_count, &s, NULL, 0) < 0)
-		return;
+		cur_runnable = get_runnable_processes();
 
-#else
-
-	int s_name[2] = { CTL_HW, HW_NCPU };
-
-	if (sysctl(s_name, 2, &cpu_core_count, &s, NULL, 0) < 0) return;
-
-#endif /* ^__APPLE__ */
-
-#else
-	/* On Linux, a simple way is to look at /proc/stat, especially since we'd
-	   be parsing it anyway for other reasons later on. */
-
-	SYSTEM_INFO sys_info = { 0 };
-	GetSystemInfo(&sys_info);
-	cpu_core_count = sys_info.dwNumberOfProcessors;
-
-#endif /* ^(__APPLE__ || __FreeBSD__ || __OpenBSD__) */
-
-	if (cpu_core_count) {
-
-		cur_runnable = (u32)get_runnable_processes();
-
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
-
-		/* Add ourselves, since the 1-minute average doesn't include that yet. */
-
-		cur_runnable++;
-
-#endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
-
-		OKF("You have %u CPU cores and %u runnable tasks (utilization: %0.0f%%).",
-			cpu_core_count, cur_runnable, cur_runnable * 100.0 / cpu_core_count);
+		OKF("You have %u CPU cores and utilization %0.0f%%.",
+			cpu_core_count, cur_runnable);
 
 		if (cpu_core_count > 1) {
 
-			if (cur_runnable > cpu_core_count * 1.5) {
+			if (cur_runnable >= 90.0) {
 
 				WARNF("System under apparent load, performance may be spotty.");
 
-			}
-			else if (cur_runnable + 1 <= cpu_core_count) {
-
-				OKF("Try parallel jobs - see %s\\parallel_fuzzing.txt.", doc_path);
-
-			}
+}
 
 		}
 
 	}
-	else WARNF("Unable to figure out the number of CPU cores.");
+	else {
+
+		cpu_core_count = 0;
+		WARNF("Unable to figure out the number of CPU cores.");
+
+	}
 
 }
 
@@ -11506,6 +11429,7 @@ void detect_file_args(int argc, char** argv) {
 				else {
 					out_file = alloc_printf("%s\\.cur_input", out_dir);
 				}
+				
 				//out_file = alloc_printf("%s\\.cur_input", out_dir);
 			}
 			/* Be sure that we're always using fully-qualified paths. */
@@ -11847,11 +11771,10 @@ int main(int argc, char **argv){
 	
 	get_core_count();
 	bind_to_free_cpu();
-	check_crash_handling();
-	check_cpu_governor();
+	//check_crash_handling();
+	//check_cpu_governor();
 
 	setup_shm();
-	
 	child_handle = NULL;
 	pipe_handle = NULL;
 	init_count_class16();

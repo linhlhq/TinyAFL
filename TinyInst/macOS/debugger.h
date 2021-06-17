@@ -25,9 +25,9 @@ limitations under the License.
 #include <vector>
 #include <mutex>
 
-#include "machtarget.h"
+#include "macOS/machtarget.h"
 extern "C" {
-  #include "mig_server.h"
+  #include "macOS/mig_server.h"
 }
 
 enum DebuggerStatus {
@@ -109,8 +109,10 @@ public:
   DebuggerStatus Attach(unsigned int pid, uint32_t timeout);
 
   bool IsTargetAlive();
-  bool IsTargetFunctionDefined() { return target_function_defined; };
+  bool IsTargetFunctionDefined() { return target_function_defined; }
 
+  uint64_t GetTargetReturnValue() { return target_return_value; }
+  
   enum ExceptionType {
     BREAKPOINT,
     ACCESS_VIOLATION,
@@ -139,6 +141,47 @@ protected:
     READWRITEEXECUTE
   };
 
+#ifdef ARM64
+  enum Register {
+    X0 = 0,
+    X1,
+    X2,
+    X3,
+    X4,
+    X5,
+    X6,
+    X7,
+    X8,
+    X9,
+    X10,
+    X11,
+    X12,
+    X13,
+    X14,
+    X15,
+    X16,
+    X17,
+    X18,
+    X19,
+    X20,
+    X21,
+    X22,
+    X23,
+    X24,
+    X25,
+    X26,
+    X27,
+    X28,
+    X29,  // fp
+    X30,  // lr
+    X31,  // sp
+    PC,
+    CPSR,
+    FP,   // x29
+    LR,   // x30
+    SP,   // x31
+  };
+#else
   enum Register {
     RAX,
     RCX,
@@ -158,6 +201,7 @@ protected:
     R15,
     RIP
   };
+#endif
   
   enum TargetEndDetection {
     RETADDR_STACK_OVERWRITE,
@@ -180,7 +224,7 @@ protected:
   virtual void OnEntrypoint();
   virtual void OnTargetMethodReached() {}
 
-  virtual void OnCrashed(Exception *exception_record) {};
+  virtual void OnCrashed(Exception *exception_record) {}
 
   // should return true if the exception has been handled
   virtual bool OnException(Exception *exception_record) {
@@ -189,6 +233,8 @@ protected:
 
   size_t GetRegister(Register r);
   void SetRegister(Register r, size_t value);
+  void SetReturnAddress(size_t value);
+  size_t GetReturnAddress();
 
   void *GetModuleEntrypoint(void *base_address);
   bool IsDyld(void *base_address);
@@ -207,6 +253,7 @@ protected:
   bool trace_debug_events;
   bool attach_mode;
   bool loop_mode;
+  bool disable_aslr;
 
   std::list<std::string> additional_env;
   
@@ -282,7 +329,11 @@ private:
   struct Breakpoint {
     void *address;
     int type;
+  #ifdef ARM64
+    uint32_t original_opcode;
+  #else
     unsigned char original_opcode;
+  #endif
   };
   std::list<Breakpoint *> breakpoints;
 
@@ -295,7 +346,7 @@ private:
   void AttachToProcess();
   void HandleExceptionInternal(MachException *mach_exception);
   int HandleDebuggerBreakpoint();
-  
+
   void PrintContext();
 
   DebuggerStatus handle_exception_status;
@@ -366,6 +417,8 @@ private:
   void *saved_return_address;
   void **saved_args;
   TargetEndDetection target_end_detection;
+  
+  uint64_t target_return_value;
 
   //DYLD SPI
   void *(*m_dyld_process_info_create)(task_t task,
