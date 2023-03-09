@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "instruction.h"
 
+struct IndirectBreakpoinInfo;
 class TinyInst;
 class ModuleInfo;
 
@@ -53,7 +54,8 @@ class Assembler {
 
   virtual void JmpAddress(ModuleInfo *module, size_t address) = 0;
   virtual void Nop(ModuleInfo *module) = 0;
-  virtual void Breakpoint(ModuleInfo *module) = 0;
+  virtual void Ret(ModuleInfo *module) = 0;
+  virtual size_t Breakpoint(ModuleInfo *module) = 0;
   virtual void Crash(ModuleInfo *module) = 0;
 
   virtual void OffsetStack(ModuleInfo *module, int32_t offset) = 0;
@@ -64,7 +66,7 @@ class Assembler {
   virtual void TranslateJmp(ModuleInfo *module,
                             ModuleInfo *target_module,
                             size_t original_target,
-                            size_t edge_start_address,
+                            IndirectBreakpoinInfo& breakpoint_info,
                             bool global_indirect,
                             size_t previous_offset) = 0;
   virtual void InstrumentLocalIndirect(ModuleInfo *module,
@@ -82,4 +84,4 @@ class Assembler {
   TinyInst &tinyinst_;
 };
 
-#endif
+#endif  // ASSEMBLER_H

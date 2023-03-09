@@ -27,13 +27,6 @@ limitations under the License.
 #include "../common.h"
 #include "debugger.h"
 
-
-#define CALLCONV_MICROSOFT_X64 0
-#define CALLCONV_THISCALL 1
-#define CALLCONV_FASTCALL 2
-#define CALLCONV_CDECL 3
-#define CALLCONV_DEFAULT 4
-
 #define BREAKPOINT_UNKNOWN 0
 #define BREAKPOINT_ENTRYPOINT 1
 #define BREAKPOINT_TARGET 2
@@ -95,6 +88,20 @@ void Debugger::RetrieveThreadContext() {
   GetThreadContext(thread_handle, &lcContext);
   CloseHandle(thread_handle);
   have_thread_context = true;
+}
+
+void Debugger::SaveRegisters(SavedRegisters* registers) {
+  RetrieveThreadContext();
+  memcpy(&registers->saved_context, &lcContext, sizeof(registers->saved_context));
+}
+
+void Debugger::RestoreRegisters(SavedRegisters* registers) {
+  have_thread_context = false;
+  HANDLE thread_handle = OpenThread(THREAD_ALL_ACCESS, FALSE, thread_id);
+  if (!SetThreadContext(thread_handle, &lcContext)) {
+    FATAL("Error restoring registers");
+  }
+  CloseHandle(thread_handle);
 }
 
 size_t Debugger::GetRegister(Register r) {
@@ -333,6 +340,18 @@ void *Debugger::RemoteAllocateNear(uint64_t region_min,
   return ret;
 }
 
+// allocates memory in target process
+void* Debugger::RemoteAllocate(size_t size, MemoryProtection protection) {
+  DWORD protection_flags = WindowsProtectionFlags(protection);
+
+  void* ret_address = VirtualAllocEx(child_handle,
+    0,
+    size,
+    MEM_COMMIT | MEM_RESERVE,
+    protection_flags);
+
+  return ret_address;
+}
 
 // allocates memory in target process as close as possible
 // to max_address, but at address larger than min_address
@@ -452,15 +471,48 @@ void Debugger::RemoteFree(void *address, size_t size) {
   VirtualFreeEx(child_handle, address, 0, MEM_RELEASE);
 }
 
-void Debugger::RemoteWrite(void *address, void *buffer, size_t size) {
+void Debugger::RemoteWrite(void *address, const void *buffer, size_t size) {
   SIZE_T size_written;
+  if (WriteProcessMemory(
+    child_handle,
+    address,
+    buffer,
+    size,
+    &size_written))
+  {
+    return;
+  }
+
+  // we need to (a) read page permissions
+  // (b) make it writable, and (c) restore permissions
+  DWORD oldProtect;
+  if (!VirtualProtectEx(child_handle,
+    address,
+    size,
+    PAGE_READWRITE,
+    &oldProtect))
+  {
+    FATAL("Error in VirtualProtectEx");
+  }
+
   if (!WriteProcessMemory(
     child_handle,
     address,
     buffer,
     size,
-    &size_written)) {
+    &size_written))
+  {
     FATAL("Error writing target memory\n");
+  }
+
+  DWORD ignore;
+  if (!VirtualProtectEx(child_handle,
+    address,
+    size,
+    oldProtect,
+    &ignore))
+  {
+    FATAL("Error in VirtualProtectEx");
   }
 }
 
@@ -471,8 +523,9 @@ void Debugger::RemoteRead(void *address, void *buffer, size_t size) {
     address,
     buffer,
     size,
-    &size_read)) {
-    FATAL("Error writing target memory\n");
+    &size_read))
+  {
+    FATAL("Error reading target memory\n");
   }
 }
 
@@ -608,6 +661,35 @@ void Debugger::ProtectCodeRanges(std::list<AddressRange> *executable_ranges) {
   }
 }
 
+void Debugger::PatchPointersRemote(size_t min_address, size_t max_address, std::unordered_map<size_t, size_t>& search_replace) {
+  if (child_ptr_size == 4) {
+    PatchPointersRemoteT<uint32_t>(min_address, max_address, search_replace);
+  } else {
+    PatchPointersRemoteT<uint64_t>(min_address, max_address, search_replace);
+  }
+}
+
+template<typename T>
+void Debugger::PatchPointersRemoteT(size_t min_address, size_t max_address, std::unordered_map<size_t, size_t>& search_replace) {
+  size_t module_size = max_address - min_address;
+  char* buf = (char *)malloc(module_size);
+  RemoteRead((void *)min_address, buf, module_size);
+
+  size_t remote_address = min_address;
+  for (size_t i = 0; i < (module_size - child_ptr_size + 1); i++) {
+    T ptr = *(T *)(buf + i);
+    auto iter = search_replace.find(ptr);
+    if (iter != search_replace.end()) {
+      // printf("patching entry %zx at address %zx\n", (size_t)ptr, remote_address);
+      T fixed_ptr = (T)iter->second;
+      RemoteWrite((void *)remote_address, &fixed_ptr, child_ptr_size);
+    }
+    remote_address += 1;
+  }
+
+  free(buf);
+}
+
 // returns an array of handles for all modules loaded in the target process
 DWORD Debugger::GetLoadedModules(HMODULE **modules) {
   DWORD module_handle_storage_size = 1024 * sizeof(HMODULE);
@@ -712,12 +794,25 @@ void Debugger::AddBreakpoint(void *address, int type) {
 
 // damn it Windows, why don't you have a GetProcAddress
 // that works on another process
-DWORD Debugger::GetProcOffset(char *data, const char *name) {
+DWORD Debugger::GetProcOffset(HMODULE module, const char *name) {
+  char* base_of_dll = (char*)module;
+  DWORD size_of_image = GetImageSize(base_of_dll);
+
+  // try the exported symbols next
+  char* modulebuf = (char*)malloc(size_of_image);
+  SIZE_T num_read;
+  if (!ReadProcessMemory(child_handle, base_of_dll, modulebuf, size_of_image, &num_read) ||
+    (num_read != size_of_image))
+  {
+    FATAL("Error reading target memory\n");
+  }
+
   DWORD pe_offset;
-  pe_offset = *((DWORD *)(data + 0x3C));
-  char *pe = data + pe_offset;
+  pe_offset = *((DWORD *)(modulebuf + 0x3C));
+  char *pe = modulebuf + pe_offset;
   DWORD signature = *((DWORD *)pe);
   if (signature != 0x00004550) {
+    free(modulebuf);
     return 0;
   }
   pe = pe + 0x18;
@@ -728,55 +823,128 @@ DWORD Debugger::GetProcOffset(char *data, const char *name) {
   } else if (magic == 0x20b) {
     exporttableoffset = *(DWORD *)(pe + 112);
   } else {
+    free(modulebuf);
     return 0;
   }
 
-  if (!exporttableoffset) return 0;
-  char *exporttable = data + exporttableoffset;
+  if (!exporttableoffset) {
+    free(modulebuf);
+    return 0;
+  }
+
+  char *exporttable = modulebuf + exporttableoffset;
 
   DWORD numentries = *(DWORD *)(exporttable + 24);
   DWORD addresstableoffset = *(DWORD *)(exporttable + 28);
   DWORD nameptrtableoffset = *(DWORD *)(exporttable + 32);
   DWORD ordinaltableoffset = *(DWORD *)(exporttable + 36);
-  DWORD *nameptrtable = (DWORD *)(data + nameptrtableoffset);
-  WORD *ordinaltable = (WORD *)(data + ordinaltableoffset);
-  DWORD *addresstable = (DWORD *)(data + addresstableoffset);
+  DWORD *nameptrtable = (DWORD *)(modulebuf + nameptrtableoffset);
+  WORD *ordinaltable = (WORD *)(modulebuf + ordinaltableoffset);
+  DWORD *addresstable = (DWORD *)(modulebuf + addresstableoffset);
 
   DWORD i;
   for (i = 0; i < numentries; i++) {
-    char *nameptr = data + nameptrtable[i];
+    char *nameptr = modulebuf + nameptrtable[i];
     if (strcmp(name, nameptr) == 0) break;
   }
 
-  if (i == numentries) return 0;
+  if (i == numentries) {
+    free(modulebuf);
+    return 0;
+  }
 
   WORD oridnal = ordinaltable[i];
   DWORD offset = addresstable[oridnal];
 
+  free(modulebuf);
   return offset;
+}
+
+void* Debugger::GetSymbolAddress(void* base_address, const char* symbol_name) {
+  DWORD offset = GetProcOffset((HMODULE)base_address, symbol_name);
+  if (!offset) return NULL;
+  return (void*)((size_t)base_address + offset);
+}
+
+// Gets the registered safe exception handlers for the module
+void Debugger::GetExceptionHandlers(size_t module_haeder, std::unordered_set <size_t>& handlers) {
+  // only present on x86
+  if (child_ptr_size != 4) return;
+
+  DWORD size_of_image = GetImageSize((void *)module_haeder);
+
+  char* modulebuf = (char*)malloc(size_of_image);
+  SIZE_T num_read;
+  if (!ReadProcessMemory(child_handle, (void *)module_haeder, modulebuf, size_of_image, &num_read) ||
+    (num_read != size_of_image))
+  {
+    FATAL("Error reading target memory\n");
+  }
+
+  DWORD pe_offset;
+  pe_offset = *((DWORD*)(modulebuf + 0x3C));
+  char* pe = modulebuf + pe_offset;
+  DWORD signature = *((DWORD*)pe);
+  if (signature != 0x00004550) {
+    free(modulebuf);
+    return;
+  }
+  pe = pe + 0x18;
+  WORD magic = *((WORD*)pe);
+  DWORD lc_offset;
+  DWORD lc_size;
+  if (magic == 0x10b) {
+    lc_offset = *(DWORD*)(pe + 176);
+    lc_size = *(DWORD*)(pe + 180);
+  } else if (magic == 0x20b) {
+    lc_offset = *(DWORD*)(pe + 192);
+    lc_size = *(DWORD*)(pe + 196);
+  } else {
+    free(modulebuf);
+    return;
+  }
+
+  if (!lc_offset || (lc_size != 64)) {
+    free(modulebuf);
+    return;
+  }
+
+  char* lc = modulebuf + lc_offset;
+
+  size_t seh_table_address;
+  DWORD seh_count;
+  if (magic == 0x10b) {
+    seh_table_address = *(DWORD*)(lc + 64);
+    seh_count = *(DWORD*)(lc + 68);
+  } else if (magic == 0x20b) {
+    seh_table_address = *(uint64_t*)(lc + 96);
+    seh_count = *(DWORD*)(lc + 104);
+  } else {
+    free(modulebuf);
+    return;
+  }
+
+  size_t seh_table_offset = seh_table_address - module_haeder;
+
+  DWORD* seh_table = (DWORD *)(modulebuf + seh_table_offset);
+  for (DWORD i = 0; i < seh_count; i++) {
+    handlers.insert(module_haeder + seh_table[i]);
+  }
+
+  free(modulebuf);
 }
 
 // attempt to obtain the address of target function
 // in various ways
 char *Debugger::GetTargetAddress(HMODULE module) {
   char* base_of_dll = (char *)module;
-  DWORD size_of_image = GetImageSize(base_of_dll);
 
   // if persist_offset is defined, use that
   if (target_offset) {
     return base_of_dll + target_offset;
   }
 
-  // try the exported symbols next
-  BYTE *modulebuf = (BYTE *)malloc(size_of_image);
-  SIZE_T num_read;
-  if (!ReadProcessMemory(child_handle, base_of_dll, modulebuf, size_of_image, &num_read) ||
-     (num_read != size_of_image))
-  {
-    FATAL("Error reading target memory\n");
-  }
-  DWORD offset = GetProcOffset((char *)modulebuf, target_method.c_str());
-  free(modulebuf);
+  DWORD offset = GetProcOffset(module, target_method.c_str());
   if (offset) {
     return (char *)module + offset;
   }
@@ -841,39 +1009,173 @@ void Debugger::OnModuleUnloaded(void *module) { }
 // reads numitems entries from stack in remote process
 // from stack_addr
 // into buffer
-void Debugger::ReadStack(void *stack_addr, void **buffer, size_t numitems) {
+void Debugger::ReadStack(void *stack_addr, uint64_t *buffer, size_t numitems) {
   SIZE_T numrw = 0;
-#ifdef _WIN64
-  if (wow64_target) {
-    uint32_t *buf32 = (uint32_t *)malloc(numitems * child_ptr_size);
+  if (child_ptr_size == 4) {
+    uint32_t* buf32 = (uint32_t*)malloc(numitems * child_ptr_size);
     ReadProcessMemory(child_handle, stack_addr, buf32, numitems * child_ptr_size, &numrw);
     for (size_t i = 0; i < numitems; i++) {
-      buffer[i] = (void *)((size_t)buf32[i]);
+      buffer[i] = ((uint64_t)buf32[i]);
     }
     free(buf32);
     return;
   }
-#endif
   ReadProcessMemory(child_handle, stack_addr, buffer, numitems * child_ptr_size, &numrw);
 }
 
 // writes numitems entries to stack in remote process
 // from buffer
 // into stack_addr
-void Debugger::WriteStack(void *stack_addr, void **buffer, size_t numitems) {
+void Debugger::WriteStack(void *stack_addr, uint64_t *buffer, size_t numitems) {
   SIZE_T numrw = 0;
-#ifdef _WIN64
-  if (wow64_target) {
+  if (child_ptr_size == 4) {
     uint32_t *buf32 = (uint32_t *)malloc(numitems * child_ptr_size);
     for (size_t i = 0; i < numitems; i++) {
-      buf32[i] = (uint32_t)((size_t)buffer[i]);
+      buf32[i] = (uint32_t)(buffer[i]);
     }
     WriteProcessMemory(child_handle, stack_addr, buf32, numitems * child_ptr_size, &numrw);
     free(buf32);
     return;
   }
-#endif
   WriteProcessMemory(child_handle, stack_addr, buffer, numitems * child_ptr_size, &numrw);
+}
+
+void Debugger::SetReturnAddress(size_t value) {
+  RemoteWrite((void*)GetRegister(RSP), &value, child_ptr_size);
+}
+
+size_t Debugger::GetReturnAddress() {
+  size_t ra;
+  RemoteRead((void*)GetRegister(RSP), &ra, child_ptr_size);
+  return ra;
+}
+
+void Debugger::GetFunctionArguments(uint64_t* arguments, size_t num_args, uint64_t sp, CallingConvention callconv) {
+  RetrieveThreadContext();
+
+  switch (callconv) {
+#ifdef _WIN64
+  case CALLCONV_DEFAULT:
+  case CALLCONV_MICROSOFT_X64:
+    if (num_args > 0) arguments[0] = lcContext.Rcx;
+    if (num_args > 1) arguments[1] = lcContext.Rdx;
+    if (num_args > 2) arguments[2] = lcContext.R8;
+    if (num_args > 3) arguments[3] = lcContext.R9;
+    if (num_args > 4) {
+      ReadStack((void*)(sp + 5 * child_ptr_size), arguments + 4, num_args - 4);
+    }
+    break;
+  case CALLCONV_CDECL:
+    if (num_args > 0) {
+      ReadStack((void*)(sp + child_ptr_size), arguments, num_args);
+    }
+    break;
+  case CALLCONV_FASTCALL:
+    if (num_args > 0) arguments[0] = lcContext.Rcx;
+    if (num_args > 1) arguments[1] = lcContext.Rdx;
+    if (num_args > 3) {
+      ReadStack((void*)(sp + child_ptr_size), arguments + 2, num_args - 2);
+    }
+    break;
+  case CALLCONV_THISCALL:
+    if (num_args > 0) arguments[0] = lcContext.Rcx;
+    if (num_args > 3) {
+      ReadStack((void*)(sp + child_ptr_size), arguments + 1, num_args - 1);
+    }
+    break;
+#else
+  case CALLCONV_MICROSOFT_X64:
+    FATAL("X64 callong convention not supported for 32-bit targets");
+    break;
+  case CALLCONV_DEFAULT:
+  case CALLCONV_CDECL:
+    if (num_args > 0) {
+      ReadStack((void*)(sp + child_ptr_size), arguments, num_args);
+    }
+    break;
+  case CALLCONV_FASTCALL:
+    if (num_args > 0) arguments[0] = (uint64_t)lcContext.Ecx;
+    if (num_args > 1) arguments[1] = (uint64_t)lcContext.Edx;
+    if (num_args > 3) {
+      ReadStack((void*)(sp + child_ptr_size), arguments + 2, num_args - 2);
+    }
+    break;
+  case CALLCONV_THISCALL:
+    if (num_args > 0) arguments[0] = (uint64_t)lcContext.Ecx;
+    if (num_args > 3) {
+      ReadStack((void*)(sp + child_ptr_size), arguments + 1, num_args - 1);
+    }
+    break;
+#endif
+  default:
+    FATAL("Unknown calling convention");
+  }
+}
+
+void Debugger::SetFunctionArguments(uint64_t* arguments, size_t num_args, uint64_t sp, CallingConvention callconv) {
+  RetrieveThreadContext();
+
+  switch (callconv) {
+#ifdef _WIN64
+  case CALLCONV_DEFAULT:
+  case CALLCONV_MICROSOFT_X64:
+    if (num_args > 0) lcContext.Rcx = (size_t)arguments[0];
+    if (num_args > 1) lcContext.Rdx = (size_t)arguments[1];
+    if (num_args > 2) lcContext.R8 = (size_t)arguments[2];
+    if (num_args > 3) lcContext.R9 = (size_t)arguments[3];
+    if (num_args > 4) {
+      WriteStack((void*)(sp + 5 * child_ptr_size), arguments + 4, num_args - 4);
+    }
+    break;
+  case CALLCONV_CDECL:
+    if (num_args > 0) {
+      WriteStack((void*)(sp + child_ptr_size), arguments, num_args);
+    }
+    break;
+  case CALLCONV_FASTCALL:
+    if (num_args > 0) lcContext.Rcx = (size_t)arguments[0];
+    if (num_args > 1) lcContext.Rdx = (size_t)arguments[1];
+    if (num_args > 3) {
+      WriteStack((void*)(sp + child_ptr_size), arguments + 2, num_args - 2);
+    }
+    break;
+  case CALLCONV_THISCALL:
+    if (num_args > 0) lcContext.Rcx = (size_t)arguments[0];
+    if (num_args > 3) {
+      WriteStack((void*)(sp + child_ptr_size), arguments + 1, num_args - 1);
+    }
+    break;
+#else
+  case CALLCONV_MICROSOFT_X64:
+    FATAL("X64 callong convention not supported for 32-bit targets");
+    break;
+  case CALLCONV_DEFAULT:
+  case CALLCONV_CDECL:
+    if (num_args > 0) {
+      WriteStack((void*)(sp + child_ptr_size), arguments, num_args);
+    }
+    break;
+  case CALLCONV_FASTCALL:
+    if (num_args > 0) lcContext.Ecx = (size_t)arguments[0];
+    if (num_args > 1) lcContext.Edx = (size_t)arguments[1];
+    if (num_args > 3) {
+      WriteStack((void*)(sp + child_ptr_size), arguments + 2, num_args - 2);
+    }
+    break;
+  case CALLCONV_THISCALL:
+    if (num_args > 0) lcContext.Ecx = (size_t)arguments[0];
+    if (num_args > 3) {
+      WriteStack((void*)(sp + child_ptr_size), arguments + 1, num_args - 1);
+    }
+    break;
+#endif
+  default:
+    FATAL("Unknown calling convention");
+  }
+
+  HANDLE thread_handle = OpenThread(THREAD_ALL_ACCESS, FALSE, thread_id);
+  SetThreadContext(thread_handle, &lcContext);
+  CloseHandle(thread_handle);
 }
 
 // called when the target method is reached
@@ -882,79 +1184,13 @@ void Debugger::HandleTargetReachedInternal() {
 
   SIZE_T numrw = 0;
 
-  CONTEXT lcContext;
-  lcContext.ContextFlags = CONTEXT_ALL;
-  HANDLE thread_handle = OpenThread(THREAD_ALL_ACCESS, FALSE, thread_id);
-  GetThreadContext(thread_handle, &lcContext);
-
-  // read out and save the params
-#ifdef _WIN64
-  saved_sp = (void *)lcContext.Rsp;
-#else
-  saved_sp = (void *)lcContext.Esp;
-#endif
+  saved_sp = (void *)GetRegister(RSP);
 
   saved_return_address = 0;
   ReadProcessMemory(child_handle, saved_sp, &saved_return_address, child_ptr_size, &numrw);
 
   if (loop_mode) {
-    switch (calling_convention) {
-#ifdef _WIN64
-    case CALLCONV_DEFAULT:
-    case CALLCONV_MICROSOFT_X64:
-      if (target_num_args > 0) saved_args[0] = (void *)lcContext.Rcx;
-      if (target_num_args > 1) saved_args[1] = (void *)lcContext.Rdx;
-      if (target_num_args > 2) saved_args[2] = (void *)lcContext.R8;
-      if (target_num_args > 3) saved_args[3] = (void *)lcContext.R9;
-      if (target_num_args > 4) {
-        ReadStack((void *)(lcContext.Rsp + 5 * child_ptr_size), saved_args + 4, target_num_args - 4);
-      }
-      break;
-    case CALLCONV_CDECL:
-      if (target_num_args > 0) {
-        ReadStack((void *)(lcContext.Rsp + child_ptr_size), saved_args, target_num_args);
-      }
-      break;
-    case CALLCONV_FASTCALL:
-      if (target_num_args > 0) saved_args[0] = (void *)lcContext.Rcx;
-      if (target_num_args > 1) saved_args[1] = (void *)lcContext.Rdx;
-      if (target_num_args > 3) {
-        ReadStack((void *)(lcContext.Rsp + child_ptr_size), saved_args + 2, target_num_args - 2);
-      }
-      break;
-    case CALLCONV_THISCALL:
-      if (target_num_args > 0) saved_args[0] = (void *)lcContext.Rcx;
-      if (target_num_args > 3) {
-        ReadStack((void *)(lcContext.Rsp + child_ptr_size), saved_args + 1, target_num_args - 1);
-      }
-      break;
-#else
-    case CALLCONV_MICROSOFT_X64:
-      FATAL("X64 callong convention not supported for 32-bit targets");
-      break;
-    case CALLCONV_DEFAULT:
-    case CALLCONV_CDECL:
-      if (target_num_args > 0) {
-        ReadStack((void *)(lcContext.Esp + child_ptr_size), saved_args, target_num_args);
-      }
-      break;
-    case CALLCONV_FASTCALL:
-      if (target_num_args > 0) saved_args[0] = (void *)lcContext.Ecx;
-      if (target_num_args > 1) saved_args[1] = (void *)lcContext.Edx;
-      if (target_num_args > 3) {
-        ReadStack((void *)(lcContext.Esp + child_ptr_size), saved_args + 2, target_num_args - 2);
-      }
-      break;
-    case CALLCONV_THISCALL:
-      if (target_num_args > 0) saved_args[0] = (void *)lcContext.Ecx;
-      if (target_num_args > 3) {
-        ReadStack((void *)(lcContext.Esp + child_ptr_size), saved_args + 1, target_num_args - 1);
-      }
-      break;
-#endif
-    default:
-      break;
-    }
+    GetFunctionArguments(saved_args, target_num_args, (uint64_t)saved_sp, calling_convention);
 
     // todo store any target-specific additional context here
   }
@@ -966,8 +1202,6 @@ void Debugger::HandleTargetReachedInternal() {
   size_t return_address = PERSIST_END_EXCEPTION;
   WriteProcessMemory(child_handle, saved_sp, &return_address, child_ptr_size, &numrw);
 
-  CloseHandle(thread_handle);
-
   if (!target_reached) {
     target_reached = true;
     OnTargetMethodReached();
@@ -978,19 +1212,16 @@ void Debugger::HandleTargetReachedInternal() {
 void Debugger::HandleTargetEnded() {
   // printf("in OnTargetMethodEnded\n");
 
-  CONTEXT lcContext;
-  lcContext.ContextFlags = CONTEXT_ALL;
-  HANDLE thread_handle = OpenThread(THREAD_ALL_ACCESS, FALSE, thread_id);
-  GetThreadContext(thread_handle, &lcContext);
-
-#ifdef _WIN64
-  target_return_value = (uint64_t)lcContext.Rax;
-#else
-  target_return_value = (uint64_t)lcContext.Eax;
-#endif
+  target_return_value = GetRegister(RAX);
 
   if (loop_mode) {
     // restore params
+
+    // Writing to lcContext directly to avoid calling 
+    // SetThreadContext multiple times.
+    // We don't need to RetrieveThreadContext() as it was done in 
+    // GetRegister() above and we don't need to SetThreadContext
+    // as it will be called by SetFunctionArguments below
 #ifdef _WIN64
     lcContext.Rip = (size_t)target_address;
     lcContext.Rsp = (size_t)saved_sp;
@@ -1004,73 +1235,13 @@ void Debugger::HandleTargetEnded() {
     size_t return_address = PERSIST_END_EXCEPTION;
     WriteProcessMemory(child_handle, saved_sp, &return_address, child_ptr_size, &numrw);
 
-    switch (calling_convention) {
-#ifdef _WIN64
-    case CALLCONV_DEFAULT:
-    case CALLCONV_MICROSOFT_X64:
-      if (target_num_args > 0) lcContext.Rcx = (size_t)saved_args[0];
-      if (target_num_args > 1) lcContext.Rdx = (size_t)saved_args[1];
-      if (target_num_args > 2) lcContext.R8 = (size_t)saved_args[2];
-      if (target_num_args > 3) lcContext.R9 = (size_t)saved_args[3];
-      if (target_num_args > 4) {
-        WriteStack((void *)(lcContext.Rsp + 5 * child_ptr_size), saved_args + 4, target_num_args - 4);
-      }
-      break;
-    case CALLCONV_CDECL:
-      if (target_num_args > 0) {
-        WriteStack((void *)(lcContext.Rsp + child_ptr_size), saved_args, target_num_args);
-      }
-      break;
-    case CALLCONV_FASTCALL:
-      if (target_num_args > 0) lcContext.Rcx = (size_t)saved_args[0];
-      if (target_num_args > 1) lcContext.Rdx = (size_t)saved_args[1];
-      if (target_num_args > 3) {
-        WriteStack((void *)(lcContext.Rsp + child_ptr_size), saved_args + 2, target_num_args - 2);
-      }
-      break;
-    case CALLCONV_THISCALL:
-      if (target_num_args > 0) lcContext.Rcx = (size_t)saved_args[0];
-      if (target_num_args > 3) {
-        WriteStack((void *)(lcContext.Rsp + child_ptr_size), saved_args + 1, target_num_args - 1);
-      }
-      break;
-#else
-    case CALLCONV_MICROSOFT_X64:
-      FATAL("X64 callong convention not supported for 32-bit targets");
-      break;
-    case CALLCONV_DEFAULT:
-    case CALLCONV_CDECL:
-      if (target_num_args > 0) {
-        WriteStack((void *)(lcContext.Esp + child_ptr_size), saved_args, target_num_args);
-      }
-      break;
-    case CALLCONV_FASTCALL:
-      if (target_num_args > 0) lcContext.Ecx = (size_t)saved_args[0];
-      if (target_num_args > 1) lcContext.Edx = (size_t)saved_args[1];
-      if (target_num_args > 3) {
-        WriteStack((void *)(lcContext.Esp + child_ptr_size), saved_args + 2, target_num_args - 2);
-      }
-      break;
-    case CALLCONV_THISCALL:
-      if (target_num_args > 0) lcContext.Ecx = (size_t)saved_args[0];
-      if (target_num_args > 3) {
-        WriteStack((void *)(lcContext.Esp + child_ptr_size), saved_args + 1, target_num_args - 1);
-      }
-      break;
-#endif
-    default:
-      break;
-    }
+    SetFunctionArguments(saved_args, target_num_args, (uint64_t)saved_sp, calling_convention);
 
     // todo restore any target-specific additional context here
 
   } else { /*  loop_mode == false */
 
-#ifdef _WIN64
-    lcContext.Rip = (size_t)saved_return_address;
-#else
-    lcContext.Eip = (size_t)saved_return_address;
-#endif
+    SetRegister(RIP, (size_t)saved_return_address);
 
     // restore target entry breakpoint
     // note that this time, the breakpoint address might be
@@ -1079,9 +1250,6 @@ void Debugger::HandleTargetEnded() {
     AddBreakpoint((void *)GetTranslatedAddress((size_t)target_address),
                   BREAKPOINT_TARGET);
   }
-
-  SetThreadContext(thread_handle, &lcContext);
-  CloseHandle(thread_handle);
 }
 
 // called when process entrypoint gets reached
@@ -1396,6 +1564,13 @@ void Debugger::StartProcess(char *cmd) {
   dbg_continue_needed = false;
 
   STARTUPINFOA si;
+  STARTUPINFOEXA si_ex;
+  LPSTARTUPINFOA si_ptr;
+  LPSTARTUPINFOA si_basic_ptr;
+  LPPROC_THREAD_ATTRIBUTE_LIST attr_list_buf = NULL;
+
+  DWORD creation_flags = DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS;
+
   PROCESS_INFORMATION pi;
   HANDLE hJob = NULL;
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limit;
@@ -1418,16 +1593,52 @@ void Debugger::StartProcess(char *cmd) {
   }
   BOOL inherit_handles = TRUE;
 
-  ZeroMemory(&si, sizeof(si));
-  si.cb = sizeof(si);
-  ZeroMemory(&pi, sizeof(pi));
+  if (force_dep) {
+    ZeroMemory(&si_ex, sizeof(si_ex));
+    si_ex.StartupInfo.cb = sizeof(si_ex);
+
+    creation_flags |= EXTENDED_STARTUPINFO_PRESENT;
+
+    SIZE_T attr_size = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
+    if (attr_size == 0) {
+      FATAL("Error getting attribute list size");
+    }
+
+    attr_list_buf = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attr_size);
+    if (!InitializeProcThreadAttributeList(attr_list_buf, 1, 0, &attr_size)) {
+      FATAL("Error in InitializeProcThreadAttributeList");
+    }
+
+    DWORD flags = PROCESS_CREATION_MITIGATION_POLICY_DEP_ENABLE;
+    size_t flags_size = sizeof(flags);
+
+    if (!UpdateProcThreadAttribute(attr_list_buf,
+      0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+      &flags, flags_size, NULL, NULL))
+    {
+      FATAL("Error in UpdateProcThreadAttribute");
+    }
+
+    si_ex.lpAttributeList = attr_list_buf;
+
+    si_ptr = (LPSTARTUPINFOA)&si_ex;
+    si_basic_ptr = &si_ex.StartupInfo;
+  } else {
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    si_ptr = &si;
+    si_basic_ptr = &si;
+  }
 
   if (sinkhole_stds) {
-    si.hStdOutput = si.hStdError = devnul_handle;
-    si.dwFlags |= STARTF_USESTDHANDLES;
+    si_basic_ptr->hStdOutput = si_basic_ptr->hStdError = devnul_handle;
+    si_basic_ptr->dwFlags |= STARTF_USESTDHANDLES;
   } else {
     inherit_handles = FALSE;
   }
+
+  ZeroMemory(&pi, sizeof(pi));
 
   if (mem_limit || cpu_aff) {
     hJob = CreateJobObject(NULL, NULL);
@@ -1461,13 +1672,18 @@ void Debugger::StartProcess(char *cmd) {
                       NULL,
                       NULL,
                       inherit_handles,
-                      DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS,
+                      creation_flags,
                       NULL,
                       NULL,
-                      &si,
+                      si_ptr,
                       &pi))
   {
     FATAL("CreateProcess failed, GLE=%d.\n", GetLastError());
+  }
+
+  if (attr_list_buf) {
+    DeleteProcThreadAttributeList(attr_list_buf);
+    free(attr_list_buf);
   }
 
   child_handle = pi.hProcess;
@@ -1677,6 +1893,8 @@ void Debugger::Init(int argc, char **argv) {
       FATAL("Unknown calling convention");
   }
 
+  force_dep = GetBinaryOption("-force_dep", argc, argv, false);
+
   // check if we are running in persistence mode
   if (target_module[0] || target_offset || target_method[0]) {
     target_function_defined = true;
@@ -1690,7 +1908,7 @@ void Debugger::Init(int argc, char **argv) {
   }
 
   if (target_num_args) {
-    saved_args = (void **)malloc(target_num_args * sizeof(void *));
+    saved_args = (uint64_t *)malloc(target_num_args * sizeof(uint64_t));
   }
 
   // get allocation granularity

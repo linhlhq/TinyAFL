@@ -27,7 +27,6 @@ private:
   task_t task;
   mach_port_t exception_port;
   vm_size_t m_page_size;
-  int pointer_size;
 
   exception_mask_t       saved_masks[EXC_TYPES_COUNT];
   mach_port_t            saved_ports[EXC_TYPES_COUNT];
@@ -45,6 +44,7 @@ public:
   mach_port_t ExceptionPort() { return exception_port; }
 
   vm_size_t PageSize();
+  vm_size_t MemSize();
 
   kern_return_t BasicInfo(mach_task_basic_info *info);
   void GetRegionSubmapInfo(mach_vm_address_t *region_address,
@@ -56,6 +56,7 @@ public:
 
   dyld_all_image_infos GetAllImageInfos();
   void ReadCString(uint64_t address, size_t max_size, void *string);
+  void ReadCString(uint64_t address, std::string &string);
 
   kern_return_t WaitForException(uint32_t timeout, mach_msg_header_t *req, uint32_t size);
   void ReplyToException(mach_msg_header_t *rpl);

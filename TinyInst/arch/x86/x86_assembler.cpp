@@ -22,6 +22,9 @@ unsigned char BREAKPOINT[] = {0xCC};
 // nop
 unsigned char NOP[] = {0x90};
 
+// ret
+unsigned char RETURN[] = {0xC3};
+
 // jmp offset
 unsigned char JMP[] = {0xe9, 0x00, 0x00, 0x00, 0x00};
 
@@ -130,19 +133,25 @@ void X86Assembler::Crash(ModuleInfo *module) {
   }
 }
 
-void X86Assembler::Breakpoint(ModuleInfo *module) {
+size_t X86Assembler::Breakpoint(ModuleInfo *module) {
+  size_t ret = tinyinst_.GetCurrentInstrumentedAddress(module);
   tinyinst_.WriteCode(module, &BREAKPOINT, sizeof(BREAKPOINT));
+  return ret;
 }
 
 void X86Assembler::Nop(ModuleInfo *module) {
   tinyinst_.WriteCode(module, &NOP, sizeof(NOP));
 }
 
+void X86Assembler::Ret(ModuleInfo *module) {
+  tinyinst_.WriteCode(module, &RETURN, sizeof(RETURN));
+}
+
 void X86Assembler::JmpAddress(ModuleInfo *module, size_t address) {
   // just insert a jump to address
   tinyinst_.WriteCode(module, JMP_MEM, sizeof(JMP_MEM));
   if (tinyinst_.child_ptr_size == 4) {
-    FixDisp4(module, tinyinst_.GetCurrentInstrumentedAddress(module));
+    FixDisp4(module, (int32_t)tinyinst_.GetCurrentInstrumentedAddress(module));
   }
   tinyinst_.WritePointer(module, (size_t)address);
 }
@@ -220,7 +229,7 @@ void X86Assembler::WriteStack(ModuleInfo *module, int32_t offset) {
 void X86Assembler::TranslateJmp(ModuleInfo *module,
                                 ModuleInfo *target_module,
                                 size_t original_target,
-                                size_t edge_start_address,
+                                IndirectBreakpoinInfo& breakpoint_info,
                                 bool global_indirect,
                                 size_t previous_offset) {
 
@@ -255,7 +264,7 @@ void X86Assembler::TranslateJmp(ModuleInfo *module,
   }
 
   // consider indirect call/jump an edge and insert appropriate instrumentation
-  tinyinst_.InstrumentEdge(module, target_module, edge_start_address,
+  tinyinst_.InstrumentEdge(module, target_module, breakpoint_info.source_bb,
                            original_target);
 
   // jmp [actual_target]
@@ -322,7 +331,7 @@ void X86Assembler::InstrumentRet(ModuleInfo *module,
 }
 
 // converts an indirect jump/call into a MOV instruction
-// which moves the target of the indirect call into the RAX/EAX reguster
+// which moves the target of the indirect call into the RAX/EAX register
 // and writes this instruction into the code buffer
 void X86Assembler::MovIndirectTarget(ModuleInfo *module,
                                      Instruction &inst,
@@ -932,6 +941,9 @@ void X86Assembler::HandleBasicBlockEnd(
         }
         tinyinst_.WriteCode(module, encoded, olen);
 
+        size_t translated_return_address = tinyinst_.GetCurrentInstrumentedAddress(module);
+        tinyinst_.OnReturnAddress(module, (size_t)return_address, translated_return_address);
+
         // jmp return_address
         tinyinst_.WriteCode(module, JMP, sizeof(JMP));
 
@@ -992,6 +1004,9 @@ void X86Assembler::HandleBasicBlockEnd(
           tinyinst_.WriteCode(module, CALL, sizeof(CALL));
           FixDisp4(module, sizeof(JMP));
 
+          size_t translated_return_address = tinyinst_.GetCurrentInstrumentedAddress(module);
+          tinyinst_.OnReturnAddress(module, (size_t)return_address, translated_return_address);
+
           tinyinst_.WriteCode(module, JMP, sizeof(JMP));
 
           tinyinst_.FixOffsetOrEnqueue(
@@ -1022,6 +1037,9 @@ void X86Assembler::HandleBasicBlockEnd(
             inst,
             (unsigned char *)(code_ptr + last_offset),
             (unsigned char *)(address + last_offset));
+
+          size_t translated_return_address = tinyinst_.GetCurrentInstrumentedAddress(module);
+          tinyinst_.OnReturnAddress(module, (size_t)return_address, translated_return_address);
 
           tinyinst_.WriteCode(module, JMP, sizeof(JMP));
 

@@ -17,6 +17,7 @@ limitations under the License.
 #ifndef COMMON_H
 #define COMMON_H
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
@@ -61,6 +62,12 @@ enum {
   } while (0)
 
 #define USAGE_CHECK(condition, message) if(!(condition)) FATAL("%s\n", message);
+
+struct AddressRange {
+  size_t from;
+  size_t to;
+  char *data;
+};
 
 // gets time in milliseconds
 uint64_t GetCurTime(void);

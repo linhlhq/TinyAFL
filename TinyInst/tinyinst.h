@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <list>
 #include <set>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -31,7 +32,20 @@ limitations under the License.
 #include "common.h"
 #include "assembler.h"
 #include "instruction.h"
+#include "unwind.h"
 
+class Hook;
+
+#if defined(_WIN64)
+
+#include "Windows/winunwind.h"
+
+#elif __APPLE__
+
+#include "macOS/unwindmacos.h"
+class UnwindGeneratorMacOS;
+
+#endif
 
 // must be a power of two
 #define JUMPTABLE_SIZE 0x2000
@@ -40,11 +54,22 @@ limitations under the License.
 // original_code_size * CODE_SIZE_MULTIPLIER +
 // JUMPTABLE_SIZE * child_ptr_size
 // for instrumented code
+#ifdef ARM64
+#define CODE_SIZE_MULTIPLIER 8
+#else
 #define CODE_SIZE_MULTIPLIER 4
+#endif
 
 typedef struct xed_decoded_inst_s xed_decoded_inst_t;
 
 class ModuleInfo;
+
+
+enum InstructionResult {
+  INST_HANDLED,
+  INST_NOTHANDLED,
+  INST_STOPBB
+};
 
 class TinyInst : public Debugger {
 public:
@@ -67,15 +92,11 @@ protected:
     II_AUTO
   };
 
-  enum InstructionResult {
-    INST_HANDLED,
-    INST_NOTHANDLED,
-    INST_STOPBB
-  };
-
-  struct IndirectBreakpoinInfo {
-    size_t list_head;
-    size_t source_bb;
+  enum PatchModuleEntriesValue {
+    OFF = 0,
+    DATA = 1,
+    CODE = 2,
+    ALL = DATA | CODE
   };
 
   std::list<ModuleInfo *> instrumented_modules;
@@ -114,8 +135,29 @@ protected:
   ModuleInfo *GetModuleFromInstrumented(size_t address);
   AddressRange *GetRegion(ModuleInfo *module, size_t address);
 
+  // instrumentation API
+  virtual void OnModuleEntered(ModuleInfo *module, size_t entry_address) {}
+  virtual void InstrumentBasicBlock(ModuleInfo *module, size_t bb_address) {}
+  virtual void InstrumentEdge(ModuleInfo *previous_module,
+                              ModuleInfo *next_module,
+                              size_t previous_address,
+                              size_t next_address) {}
+
+  virtual InstructionResult InstrumentInstruction(ModuleInfo *module,
+                                                  Instruction& inst,
+                                                  size_t bb_address,
+                                                  size_t instruction_address);
+
+  virtual void OnModuleInstrumented(ModuleInfo* module);
+  virtual void OnModuleUninstrumented(ModuleInfo* module);
+
   int32_t sp_offset;
   Assembler* assembler_;
+
+  UnwindGenerator* unwind_generator;
+  virtual void OnReturnAddress(ModuleInfo *module, size_t original_address, size_t translated_address);
+  
+  void RegisterHook(Hook *hook);
 
 private:
   bool HandleBreakpoint(void *address);
@@ -148,6 +190,8 @@ private:
   void ClearCrossModuleLinks(ModuleInfo *module);
   void ClearCrossModuleLinks();
 
+  void PatchModuleEntries(ModuleInfo* module);
+
   // functions related to indirect jump/call instrumentation
   void InitGlobalJumptable(ModuleInfo *module);
   void InstrumentIndirect(ModuleInfo *module,
@@ -167,29 +211,17 @@ private:
                            size_t original_target,
                            size_t actual_target,
                            size_t list_head_offset,
-                           size_t edge_start_address,
+                           IndirectBreakpoinInfo& breakpoint_info,
                            bool global_indirect);
-  void PushReturnAddress(ModuleInfo *module, uint64_t return_address);
   bool HandleIndirectJMPBreakpoint(void *address);
 
-  // instrumentation API
-  virtual void OnModuleEntered(ModuleInfo *module, size_t entry_address) {}
-  virtual void InstrumentBasicBlock(ModuleInfo *module, size_t bb_address) {}
-  virtual void InstrumentEdge(ModuleInfo *previous_module,
-                              ModuleInfo *next_module,
-                              size_t previous_address,
-                              size_t next_address) {}
-
-  virtual InstructionResult InstrumentInstruction(ModuleInfo *module,
-                                                  Instruction& inst,
-                                                  size_t bb_address,
-                                                  size_t instruction_address)
-  {
-    return INST_NOTHANDLED;
-  }
-
-  virtual void OnModuleInstrumented(ModuleInfo *module) {}
-  virtual void OnModuleUninstrumented(ModuleInfo *module) {}
+  void PatchPointersLocal(char* buf, size_t size,
+                          std::unordered_map<size_t, size_t>& search_replace,
+                          bool commit_code, ModuleInfo* module);
+  template<typename T>
+  void PatchPointersLocalT(char* buf, size_t size,
+                           std::unordered_map<size_t, size_t>& search_replace,
+                           bool commit_code, ModuleInfo* module);
 
   IndirectInstrumentation indirect_instrumentation_mode;
 
@@ -200,6 +232,10 @@ private:
   bool trace_basic_blocks;
   bool trace_module_entries;
 
+  bool generate_unwind;
+
+  bool page_extend_modules;
+
   // these could be indexed by module1 and module2 for performance
   // but the assumption for now is that there won't be too many of
   // them so a flat structure shoudl be ok for now
@@ -207,10 +243,33 @@ private:
 
   bool instrumentation_disabled;
   bool instrument_modules_on_load;
+  
+  bool full_address_map;
 
-  // friend class Asssembler;
+  PatchModuleEntriesValue patch_module_entries;
+
+  std::list<Hook *> hooks;
+  std::unordered_map<uint64_t, Hook *> resolved_hooks;
+  
+  friend class Asssembler;
   friend class X86Assembler;
+  friend class Arm64Assembler;
   friend class ModuleInfo;
+  friend class UnwindGenerator;
+  friend class Hook;
+#if defined(_WIN64)
+  friend class WinUnwindGenerator;
+#elif __APPLE__
+  friend class UnwindGeneratorMacOS;
+#endif
+};
+
+struct IndirectBreakpoinInfo {
+  size_t list_head;
+  size_t source_bb;
+#ifdef ARM64
+  uint8_t branch_register;
+#endif
 };
 
 class ModuleInfo {
@@ -225,7 +284,7 @@ class ModuleInfo {
   size_t code_size;
   bool loaded;
   bool instrumented;
-  std::list<TinyInst::AddressRange> executable_ranges;
+  std::list<AddressRange> executable_ranges;
 
   size_t instrumented_code_size;
   size_t instrumented_code_allocated;
@@ -235,17 +294,24 @@ class ModuleInfo {
 
   std::unordered_map<uint32_t, uint32_t> basic_blocks;
 
+  // instrumented address to original address
+  std::map<size_t, size_t> address_map;
+
   size_t br_indirect_newtarget_global;
 
   // per callsite jumplist breakpoint
   // from breakpoint address to list head offset
-  std::unordered_map<size_t, TinyInst::IndirectBreakpoinInfo> br_indirect_newtarget_list;
+  std::unordered_map<size_t, IndirectBreakpoinInfo> br_indirect_newtarget_list;
 
   size_t jumptable_offset;
   size_t jumptable_address_offset;
 
   std::unordered_set<size_t> invalid_instructions;
   std::unordered_map<size_t, size_t> tracepoints;
+
+  std::unordered_set<size_t> entry_offsets;
+
+  UnwindData *unwind_data;
 
   // clients can use this to store additional data
   // about the module

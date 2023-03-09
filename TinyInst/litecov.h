@@ -103,9 +103,16 @@ protected:
                                                   size_t bb_address,
                                                   size_t instruction_address) override;
 
-
   void EmitCoverageInstrumentation(ModuleInfo *module, uint64_t coverage_code);
+  void EmitCoverageInstrumentation(ModuleInfo *module,
+                                    size_t bit_address,
+                                    size_t mov_address);
   void ClearCoverageInstrumentation(ModuleInfo *module, uint64_t coverage_code);
+
+  void NopCovInstructions(ModuleInfo *module, size_t code_offset);
+  void NopCmpCovInstructions(ModuleInfo *module,
+                             CmpCoverageRecord &cmp_record,
+                             int matched_width);
 
   // compute a unique code for a basic block
   // this is just an offset into the module
@@ -130,11 +137,12 @@ protected:
   void ClearCmpCoverageInstrumentation(ModuleInfo *module, uint64_t coverage_code);
   void CollectCmpCoverage(ModuleCovData *data, size_t buffer_offset, char buffer_value);
   bool ShouldInstrumentSub(ModuleInfo *module,
-                           xed_decoded_inst_t *cmp_xedd,
+                           Instruction& cmp_instr,
                            size_t instruction_address);
 private:
   CovType coverage_type;
   bool compare_coverage;
+  size_t skip_cov_instruction_br_off;
 };
 
 #endif // LITECOV_H

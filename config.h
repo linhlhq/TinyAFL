@@ -21,7 +21,7 @@ http://www.apache.org/licenses/LICENSE-2.0
 
 /* Version string: */
 
-#define VERSION             "1.10"
+#define VERSION             "1.20"
 #define WINAFL_VERSION		"1.06"
 #define AFL_VERSION			"2.39"
 

@@ -14,9 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#include <stdio.h>
+#include <cstdio>
 #include <cstdlib>
-#include <string.h>
+#include <cstring>
+#include <string>
 
 #include <mach/mach_vm.h>
 #include <mach-o/dyld_images.h>
@@ -144,13 +145,16 @@ void MachTarget::ReplyToException(mach_msg_header_t *rpl) {
                 MACH_PORT_NULL);           /* notify port, unused */
 
   if (krt != MACH_MSG_SUCCESS) {
+    // the target could be terminated at this point, check if that's the case
+    if(!IsTaskValid() || !IsExceptionPortValid()) return;
+
     FATAL("Error (%s) sending reply to exception port\n", mach_error_string(krt));
   }
 }
 
 void MachTarget::CleanUp() {
   /* restore saved exception ports */
-  for (int i = 0; i < saved_exception_types_count; ++i) {
+  for (uint32_t i = 0; i < saved_exception_types_count; ++i) {
       task_set_exception_ports(task,
                                saved_masks[i],
                                saved_ports[i],
@@ -321,6 +325,21 @@ vm_size_t MachTarget::PageSize() {
   return m_page_size;
 }
 
+vm_size_t MachTarget::MemSize() {
+  kern_return_t krt;
+
+  task_vm_info_data_t vm_info;
+  mach_msg_type_number_t info_count = TASK_VM_INFO_COUNT;
+  krt = task_info(task, TASK_VM_INFO, (task_info_t)&vm_info, &info_count);
+
+  if (krt != KERN_SUCCESS) {
+    // if this failed, the target is most likely dead
+    return 0;
+  }
+
+  return vm_info.resident_size;
+}
+
 dyld_all_image_infos MachTarget::GetAllImageInfos() {
   task_dyld_info_data_t task_dyld_info;
   mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
@@ -346,6 +365,25 @@ void MachTarget::ReadCString(uint64_t address, size_t max_size, void *string) {
 
     string = (void*)((uint64_t)string + cur_size);
     max_size -= cur_size;
+    address += cur_size;
+  }
+}
+
+void MachTarget::ReadCString(uint64_t address, std::string &string) {
+  size_t page_size = PageSize();
+  char *buf = (char *)malloc(page_size);
+
+  while (1) {
+    size_t cur_size = MaxBytesLeftInPage(address, page_size);
+    ReadMemory(address, cur_size, buf);
+    if (memchr((void*)buf, '\0', cur_size)) {
+      string.append(buf);
+      free(buf);
+      return;
+    } else {
+      string.append(buf, cur_size);
+    }
+
     address += cur_size;
   }
 }

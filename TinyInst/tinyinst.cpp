@@ -19,22 +19,21 @@ limitations under the License.
 #include <stdio.h>
 #include <stdbool.h>
 #include <inttypes.h>
+#include <algorithm>
 
 #include <list>
-using namespace std;
 
 #include "tinyinst.h"
-
-extern "C" {
-#include "xed/xed-interface.h"
-}
+#include "hook.h"
 
 #ifdef ARM64
-  // TODO: define arch_pc in common file
-  #define ARCH_PC PC
+  #include "arch/arm64/arm64_assembler.h"
 #else
-  #define ARCH_PC RIP
-#include "arch/x86/x86_assembler.h"
+  #include "arch/x86/x86_assembler.h"
+#endif
+#if defined(__APPLE__) && defined(ARM64)
+  #include <set>
+  #include "macOS/dyld_cache_map_parser.h"
 #endif
 
 ModuleInfo::ModuleInfo() {
@@ -48,6 +47,7 @@ ModuleInfo::ModuleInfo() {
   instrumented_code_remote = NULL;
   instrumented_code_remote_previous = NULL;
   instrumented_code_size = 0;
+  unwind_data = NULL;
 }
 
 void ModuleInfo::ClearInstrumentation() {
@@ -69,6 +69,7 @@ void ModuleInfo::ClearInstrumentation() {
   instrumented_code_allocated = 0;
 
   basic_blocks.clear();
+  address_map.clear();
 
   br_indirect_newtarget_global = 0;
   br_indirect_newtarget_list.clear();
@@ -270,7 +271,7 @@ void TinyInst::FixOffsetOrEnqueue(
   }
 }
 
-// various breapoints
+// various breakpoints
 bool TinyInst::HandleBreakpoint(void *address) {
   ModuleInfo *module = GetModuleFromInstrumented((size_t)address);
   if (!module) return false;
@@ -282,7 +283,6 @@ bool TinyInst::HandleBreakpoint(void *address) {
 
       printf("TRACE: Executing basic block, original at %p, instrumented at %p\n",
              (void *)iter->second, (void *)iter->first);
-
       return true;
     } else {
       printf("TRACE: Breakpoint\n");
@@ -298,6 +298,14 @@ bool TinyInst::HandleBreakpoint(void *address) {
     WARN("This could be either due to a bug in the target or the bug/incompatibility in TinyInst");
     WARN("The target will crash now");
     return true;
+  }
+
+  if(unwind_generator->HandleBreakpoint(module, address)) {
+    return true;
+  }
+  
+  for(auto iter = hooks.begin(); iter != hooks.end(); iter++) {
+    if((*iter)->HandleBreakpoint(module, address)) return true;
   }
 
   return false;
@@ -316,8 +324,8 @@ bool TinyInst::HandleIndirectJMPBreakpoint(void *address) {
   bool global_indirect;
 
   size_t list_head_offset;
-  size_t instruction_address = 0;
 
+  IndirectBreakpoinInfo bp_info = {};
   if ((size_t)address == module->br_indirect_newtarget_global) {
     is_indirect_breakpoint = true;
     global_indirect = true;
@@ -326,14 +334,13 @@ bool TinyInst::HandleIndirectJMPBreakpoint(void *address) {
     if (iter != module->br_indirect_newtarget_list.end()) {
       is_indirect_breakpoint = true;
       global_indirect = false;
+      bp_info = iter->second;
       list_head_offset = iter->second.list_head;
-      instruction_address = iter->second.source_bb;
     }
   }
-
   if (!is_indirect_breakpoint) return false;
 
-  size_t original_address = GetRegister(RAX);
+  size_t original_address = GetRegister(ORIG_ADDR_REG);
 
   // if it's a global indirect, list head must be calculated from target
   // otherwise it's a per-callsite indirect and the list head was set earlier
@@ -361,11 +368,17 @@ bool TinyInst::HandleIndirectJMPBreakpoint(void *address) {
                                           original_address,
                                           translated_address,
                                           list_head_offset,
-                                          instruction_address,
+                                          bp_info,
                                           global_indirect);
 
+  size_t continue_address = (size_t)module->instrumented_code_remote + entry_offset;
+
+  if (target_module) {
+    continue_address = unwind_generator->MaybeRedirectExecution(target_module, continue_address);
+  }
+
   // redirect execution to just created entry which should handle it immediately
-  SetRegister(ARCH_PC, (size_t)module->instrumented_code_remote + entry_offset);
+  SetRegister(ARCH_PC, continue_address);
   return true;
 }
 
@@ -377,7 +390,7 @@ size_t TinyInst::AddTranslatedJump(ModuleInfo *module,
                                    size_t original_target,
                                    size_t actual_target,
                                    size_t list_head_offset,
-                                   size_t edge_start_address,
+                                   IndirectBreakpoinInfo& breakpoint_info,
                                    bool global_indirect) {
   size_t entry_offset = module->instrumented_code_allocated;
 
@@ -397,7 +410,7 @@ size_t TinyInst::AddTranslatedJump(ModuleInfo *module,
   assembler_->TranslateJmp(module,
                            target_module,
                            original_target,
-                           edge_start_address,
+                           breakpoint_info,
                            global_indirect,
                            previous_offset);
 
@@ -450,7 +463,11 @@ TinyInst::IndirectInstrumentation TinyInst::ShouldInstrumentIndirect(
     return indirect_instrumentation_mode;
   } else {
     // default to the most performant mode which is II_GLOBAL
+#ifdef ARM64
+    return II_LOCAL;
+#else
     return II_GLOBAL;
+#endif
   }
 }
 
@@ -482,9 +499,13 @@ void TinyInst::InstrumentIndirect(ModuleInfo *module,
 void TinyInst::TranslateBasicBlock(char *address,
                                    ModuleInfo *module,
                                    std::set<char *> *queue,
-                                   std::list<pair<uint32_t, uint32_t>> *offset_fixes) {
+                                   std::list<std::pair<uint32_t, uint32_t>> *offset_fixes) {
   uint32_t original_offset = (uint32_t)((size_t)address - (size_t)(module->min_address));
   uint32_t translated_offset = (uint32_t)module->instrumented_code_allocated;
+
+  unwind_generator->OnBasicBlockStart(module,
+    (size_t)address,
+    GetCurrentInstrumentedAddress(module));
 
   // printf("Instrumenting bb, original at %p, instrumented at %p\n",
   //        address, module->instrumented_code_remote + translated_offset);
@@ -509,7 +530,7 @@ void TinyInst::TranslateBasicBlock(char *address,
     assembler_->Breakpoint(module);
     module->tracepoints[breakpoint_address] = (size_t)address;
   } else if (GetTargetMethodAddress()) {
-    // hack, allow 1 byte of unused space at the beginning
+    // hack, allow 1 or 4 byte of unused space at the beginning
     // of the target method. This is needed because we
     // are setting a brekpoint here. If this breakpoint falls
     // into code inserted by the client, and the client modifies
@@ -532,6 +553,16 @@ void TinyInst::TranslateBasicBlock(char *address,
 
     if (!success) break;
 
+    unwind_generator->OnInstruction(module,
+      (size_t)address + offset,
+      GetCurrentInstrumentedAddress(module));
+
+    if(full_address_map) {
+      size_t original_address = (size_t)address + offset;
+      size_t instrumented_address = GetCurrentInstrumentedAddress(module);
+      module->address_map[instrumented_address] = original_address;
+    }
+    
     // instruction-level-instrumentation
     InstructionResult instrumentation_result =
       InstrumentInstruction(module, inst, (size_t)address, (size_t)address + offset);
@@ -541,6 +572,9 @@ void TinyInst::TranslateBasicBlock(char *address,
       offset += inst.length;
       continue;
     case INST_STOPBB:
+      unwind_generator->OnBasicBlockEnd(module,
+        (size_t)address + offset + inst.length,
+        GetCurrentInstrumentedAddress(module));
       return;
     case INST_NOTHANDLED:
     default:
@@ -558,9 +592,16 @@ void TinyInst::TranslateBasicBlock(char *address,
   if (!inst.bbend) {
     // WARN("Could not find end of bb at %p.\n", address);
     InvalidInstruction(module);
+    unwind_generator->OnBasicBlockEnd(module,
+      (size_t)address + offset,
+      GetCurrentInstrumentedAddress(module));
     return;
   }
+
   assembler_->HandleBasicBlockEnd(address, module, queue, offset_fixes, inst, code_ptr, offset, last_offset);
+  unwind_generator->OnBasicBlockEnd(module,
+    (size_t)address + offset,
+    GetCurrentInstrumentedAddress(module));
 }
 
 // starting from address, starts instrumenting code in the module
@@ -568,8 +609,8 @@ void TinyInst::TranslateBasicBlock(char *address,
 // (e.g. jump, call targets) get added to the queue
 // and instrumented as well
 void TinyInst::TranslateBasicBlockRecursive(char *address, ModuleInfo *module) {
-  set<char *> queue;
-  list<pair<uint32_t, uint32_t>> offset_fixes;
+  std::set<char *> queue;
+  std::list<std::pair<uint32_t, uint32_t>> offset_fixes;
 
   size_t code_size_before = module->instrumented_code_allocated;
 
@@ -630,7 +671,7 @@ ModuleInfo *TinyInst::GetModule(size_t address) {
 }
 
 // gets a memory region corresponding to address
-TinyInst::AddressRange *TinyInst::GetRegion(ModuleInfo *module, size_t address) {
+AddressRange *TinyInst::GetRegion(ModuleInfo *module, size_t address) {
   for (auto iter = module->executable_ranges.begin();
        iter != module->executable_ranges.end(); iter++)
   {
@@ -663,9 +704,14 @@ ModuleInfo *TinyInst::GetModuleFromInstrumented(size_t address) {
 }
 
 void TinyInst::OnCrashed(Exception *exception_record) {
+  // clear known entries on crash
+  for (auto module : instrumented_modules) {
+    module->entry_offsets.clear();
+  }
+  
   char *address = (char *)exception_record->ip;
 
-  printf("Exception at address %p\n", address);
+  printf("Exception at address %p\n", static_cast<void*>(address));
   if (exception_record->type == ACCESS_VIOLATION) {
     // printf("Access type: %d\n", (int)exception_record->ExceptionInformation[0]);
     printf("Access address: %p\n", exception_record->access_address);
@@ -674,9 +720,17 @@ void TinyInst::OnCrashed(Exception *exception_record) {
   ModuleInfo *module = GetModuleFromInstrumented((size_t)address);
   if (!module) return;
 
-  printf("Exception in instrumented module %s\n", module->module_name.c_str());
+  printf("Exception in instrumented module %s %p\n", module->module_name.c_str(), module->module_header);
   size_t offset = (size_t)address - (size_t)module->instrumented_code_remote;
 
+  if(full_address_map && !module->address_map.empty()) {
+    auto iter = module->address_map.upper_bound((size_t)address);
+    if(iter != module->address_map.begin()) {
+      --iter;
+      printf("Original exception address (could be incorrect): %p\n", (void *)iter->second);
+    }
+  }
+  
   printf("Code before:\n");
   size_t offset_from;
   if (offset < 10) offset_from = 0;
@@ -734,15 +788,52 @@ bool TinyInst::TryExecuteInstrumented(char *address) {
   if (!GetRegion(module, (size_t)address)) return false;
 
   if (trace_module_entries) {
-    printf("TRACE: Entered module %s at address %p\n", module->module_name.c_str(), address);
+    printf("TRACE: Entered module %s at address %p, offset %zx\n",
+           module->module_name.c_str(), static_cast<void*>(address),
+           (size_t)address - (size_t)module->module_header );
+  }
+  if (patch_module_entries) {
+    size_t entry_offset = (size_t)address - module->min_address;
+    module->entry_offsets.insert(entry_offset);
   }
 
   size_t translated_address = GetTranslatedAddress(module, (size_t)address);
   OnModuleEntered(module, (size_t)address);
 
-  SetRegister(RIP, translated_address);
+  translated_address = unwind_generator->MaybeRedirectExecution(module, translated_address);
+
+  SetRegister(ARCH_PC, translated_address);
 
   return true;
+}
+
+void TinyInst::OnReturnAddress(ModuleInfo *module, size_t original_address, size_t translated_address) {
+  unwind_generator->OnReturnAddress(module, original_address, translated_address);
+}
+
+void TinyInst::OnModuleInstrumented(ModuleInfo* module) {
+  unwind_generator->OnModuleInstrumented(module);
+  
+  for (auto iter = hooks.begin(); iter != hooks.end(); iter++) {
+    Hook *hook = *iter;
+    if((hook->GetModuleName() == std::string("*")) || (hook->GetModuleName() == module->module_name)) {
+      size_t address = 0;
+      if(!hook->GetFunctionName().empty()) {
+        address = (size_t)GetSymbolAddress(module->module_header, hook->GetFunctionName().c_str());
+      } else if(hook->GetFunctionOffset()) {
+        address = (size_t)(module->module_header) + hook->GetFunctionOffset();
+      } else {
+        FATAL("Hook specifies neithr function name nor offset");
+      }
+      if(address) {
+        resolved_hooks[address] = hook;
+      }
+    }
+  }
+}
+
+void TinyInst::OnModuleUninstrumented(ModuleInfo* module) {
+  unwind_generator->OnModuleUninstrumented(module);
 }
 
 // clears all instrumentation data from module locally
@@ -766,9 +857,9 @@ void TinyInst::InstrumentModule(ModuleInfo *module) {
   if (persist_instrumentation_data && module->instrumented) {
     ProtectCodeRanges(&module->executable_ranges);
     FixCrossModuleLinks(module);
-    /*printf("Module %s already instrumented, "
+    printf("Module %s already instrumented, "
            "reusing instrumentation data\n",
-           module->module_name.c_str());*/
+           module->module_name.c_str());
     return;
   }
 
@@ -794,10 +885,15 @@ void TinyInst::InstrumentModule(ModuleInfo *module) {
   }
 
   module->instrumented_code_remote =
+#ifdef ARM64
+    (char *)RemoteAllocate(module->instrumented_code_size,
+                           READEXECUTE);
+#else
     (char *)RemoteAllocateNear((uint64_t)module->min_address,
                                (uint64_t)module->max_address,
                                module->instrumented_code_size,
                                READEXECUTE);
+#endif
 
   if (!module->instrumented_code_remote) {
     // TODO also try allocating after the module
@@ -813,10 +909,93 @@ void TinyInst::InstrumentModule(ModuleInfo *module) {
   module->instrumented = true;
   FixCrossModuleLinks(module);
 
-  /*printf("Instrumented module %s, code size: %zd\n",
-         module->module_name.c_str(), module->code_size);*/
+  //printf("Instrumented module %s, code size: %zd\n",
+  //       module->module_name.c_str(), module->code_size);
 
   OnModuleInstrumented(module);
+
+  if (patch_module_entries) PatchModuleEntries(module);
+}
+
+void TinyInst::PatchPointersLocal(char* buf, size_t size, std::unordered_map<size_t, size_t>& search_replace, bool commit_code, ModuleInfo* module) {
+  if (child_ptr_size == 4) {
+    PatchPointersLocalT<uint32_t>(buf, size, search_replace, commit_code, module);
+  } else {
+    PatchPointersLocalT<uint64_t>(buf, size, search_replace, commit_code, module);
+  }
+}
+
+template<typename T>
+void TinyInst::PatchPointersLocalT(char* buf, size_t size, std::unordered_map<size_t, size_t>& search_replace, bool commit_code, ModuleInfo* module) {
+  size -= child_ptr_size - 1;
+  for (size_t i = 0; i < size; i++) {
+    T ptr = *(T*)(buf);
+    auto iter = search_replace.find(ptr);
+    if (iter != search_replace.end()) {
+      // printf("patching entry %zx at address %zx\n", (size_t)ptr, (size_t)buf);
+      // if (commit_code) printf("The address is in translated code\n");
+      T fixed_ptr = (T)iter->second;
+      *(T*)(buf) = fixed_ptr;
+      if (commit_code) {
+        CommitCode(module, i, child_ptr_size);
+      }
+    }
+    buf += 1;
+  }
+}
+
+void TinyInst::PatchModuleEntries(ModuleInfo* module) {
+  if (!patch_module_entries) return;
+
+  if (module->entry_offsets.empty()) return;
+
+  std::unordered_map<size_t, size_t> search_replace;
+  for (size_t offset : module->entry_offsets) {
+    size_t original_address = offset + module->min_address;
+    size_t translated_address = GetTranslatedAddress(module, original_address);
+    search_replace[original_address] = translated_address;
+  }
+
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32)
+
+  // patching exception handler addresses on x86 windows
+  // interferes with SafeSEH. A simple way around it for now
+  // is to simply remove exception handlers from the list
+  // of entrypoints
+  std::unordered_set<size_t> exception_handlers;
+  GetExceptionHandlers(module->min_address, exception_handlers);
+  for (size_t handler : exception_handlers) {
+    auto iter = search_replace.find(handler);
+    if (iter != search_replace.end()) {
+      // printf("Removing exception handler %zx from list of entrypoints to patch\n", handler);
+      search_replace.erase(iter);
+    }
+  }
+
+  // since at this point, we already read the code and the target can't
+  // execute it anymore, patching the entire library in the remote
+  // process is equivalent to patching data only
+  if (patch_module_entries & PatchModuleEntriesValue::DATA) {
+    PatchPointersRemote(module->min_address, module->max_address, search_replace);
+  }
+
+#elif defined(__APPLE__)
+  if (patch_module_entries & PatchModuleEntriesValue::DATA) {
+    PatchPointersRemote(module->module_header,search_replace);
+  }
+#endif
+
+  if (patch_module_entries & PatchModuleEntriesValue::CODE) {
+    // we need to patch the local copy as the code has been
+    // copied to TinyInst process alredy
+    for (AddressRange& range : module->executable_ranges) {
+      PatchPointersLocal(range.data, (range.to - range.from), search_replace, false, NULL);
+    }
+    // some of that code could have been translated already
+    // while translating entrypoints themselves
+    PatchPointersLocal(module->instrumented_code_local, module->instrumented_code_allocated, search_replace, true, module);
+  }
+
 }
 
 // walks the list of modules and instruments
@@ -874,6 +1053,8 @@ void TinyInst::OnInstrumentModuleLoaded(void *module, ModuleInfo *target_module)
 void TinyInst::OnModuleLoaded(void *module, char *module_name) {
   Debugger::OnModuleLoaded(module, module_name);
 
+  unwind_generator->OnModuleLoaded(module, module_name);
+  
   ModuleInfo *instrument_module = IsInstrumentModule(module_name);
   if (instrument_module) {
     OnInstrumentModuleLoaded(module, instrument_module);
@@ -934,6 +1115,12 @@ bool TinyInst::OnException(Exception *exception_record) {
 
 void TinyInst::OnProcessCreated() {
   Debugger::OnProcessCreated();
+
+  if ((child_ptr_size == 4) && unwind_generator->Is64BitOnly()) {
+    WARN("generate_unwind used with 32-bit process. Disabling.");
+    delete unwind_generator;
+    unwind_generator = new UnwindGenerator(*this);
+  }
 }
 
 void TinyInst::OnProcessExit() {
@@ -950,7 +1137,38 @@ void TinyInst::OnProcessExit() {
   }
   // clear cross-module links
   ClearCrossModuleLinks();
+  
+  resolved_hooks.clear();
+  for (auto iter = hooks.begin(); iter != hooks.end(); iter++) {
+    (*iter)->OnProcessExit();
+  }
 }
+
+void TinyInst::RegisterHook(Hook *hook) {
+  hooks.push_back(hook);
+}
+
+InstructionResult TinyInst::InstrumentInstruction(ModuleInfo *module,
+                                        Instruction& inst,
+                                        size_t bb_address,
+                                        size_t instruction_address)
+{
+  if(!resolved_hooks.empty()) {
+    auto iter = resolved_hooks.find(instruction_address);
+    if(iter != resolved_hooks.end()) {
+      Hook *hook = iter->second;
+      printf("Hooking function %s in module %s\n",
+             hook->GetFunctionName().c_str(),
+             module->module_name.c_str());
+      hook->SetTinyInst(this);
+      hook->SetAssembler(assembler_);
+      return hook->InstrumentFunction(module, instruction_address);
+    }
+  }
+  
+  return INST_NOTHANDLED;
+}
+
 
 // initializes instrumentation from command line options
 void TinyInst::Init(int argc, char **argv) {
@@ -958,6 +1176,7 @@ void TinyInst::Init(int argc, char **argv) {
   Debugger::Init(argc, argv);
 
 #ifdef ARM64
+  assembler_ = new Arm64Assembler(*this);
 #else
   assembler_ = new X86Assembler(*this);
 #endif
@@ -972,15 +1191,73 @@ void TinyInst::Init(int argc, char **argv) {
 
   trace_basic_blocks = GetBinaryOption("-trace_basic_blocks", argc, argv, false);
   trace_module_entries = GetBinaryOption("-trace_module_entries", argc, argv, false);
+  
+  full_address_map = GetBinaryOption("-full_address_map", argc, argv, false);
 
-  sp_offset = GetIntOption("-stack_offset", argc, argv, 0);
+#if defined(ARM64) && defined(__APPLE__)
+  page_extend_modules = GetBinaryOption("-page_extend_modules", argc, argv, true);
+#else
+  page_extend_modules = false;
+#endif
 
-  list <char *> module_names;
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(ARM64)
+  sp_offset = 0;
+#else
+  // According to System V AMD64 ABI:
+  // "For leaf-node functions a 128-byte space is stored just beneath
+  // the stack pointer of the function. The space is called the red zone.
+  // This zone will not be clobbered by any signal or interrupt handlers.
+  // Compilers can thus utilize this zone to save local variables."
+  // We set sp_offset to more than that just to be on the safe side.
+  sp_offset = 256;
+#endif
+  
+  sp_offset = GetIntOption("-stack_offset", argc, argv, sp_offset);
+
+  std::list <char *> module_names;
   GetOptionAll("-instrument_module", argc, argv, &module_names);
-  for (auto iter = module_names.begin(); iter != module_names.end(); iter++) {
+
+#if defined(__APPLE__) && defined(ARM64)
+  std::set <std::string> orig_uniq_mod_names;
+  std::set <std::string> new_uniq_mod_names;
+  if(page_extend_modules) {
+    std::map<std::string, std::vector<std::string>> mod_grp =
+      parse_dyld_map_file(find_dyld_map());
+
+    if (mod_grp.empty()) {
+      FATAL("Module group is expected to have entries.");
+    }
+
+    // Store modules, specified by user, in set for faster lookup.
+    orig_uniq_mod_names.insert(module_names.begin(), module_names.end());
+
+    // Generate list of additionally needed modules.
+    for(auto* mod_name: module_names) {
+      auto it = mod_grp.find(mod_name);
+      if(it != mod_grp.end()) {
+        for(const auto &m: it->second) {
+          // Only add if not specified by user (to keep track of newly added
+          // modules).
+          if(orig_uniq_mod_names.count(m) == 0) {
+            new_uniq_mod_names.insert(m);
+          }
+        }
+      }
+    }
+
+    SAY("Additionally added modules to align to pages:\n");
+    for (const auto &m : new_uniq_mod_names) {
+      SAY("  %s\n", m.c_str());
+      module_names.emplace_back((char*)m.c_str());
+    }
+  }
+#endif
+
+  for (const auto module_name: module_names) {
     ModuleInfo *new_module = new ModuleInfo();
-    new_module->module_name = *iter;
+    new_module->module_name = module_name;
     instrumented_modules.push_back(new_module);
+    // SAY("--- %s\n", module_name);
   }
 
   char *option;
@@ -999,4 +1276,39 @@ void TinyInst::Init(int argc, char **argv) {
     else
       FATAL("Unknown indirect instrumentation mode");
   }
+
+  patch_module_entries = PatchModuleEntriesValue::OFF;
+  option = GetOption("-patch_module_entries", argc, argv);
+  if (option) {
+    if (strcmp(option, "off") == 0)
+      patch_module_entries = PatchModuleEntriesValue::OFF;
+    else if (strcmp(option, "data") == 0)
+      patch_module_entries = PatchModuleEntriesValue::DATA;
+    else if (strcmp(option, "code") == 0)
+      patch_module_entries = PatchModuleEntriesValue::CODE;
+    else if (strcmp(option, "all") == 0)
+      patch_module_entries = PatchModuleEntriesValue::ALL;
+    else
+      FATAL("Unknown -patch_module_entries value");
+  }
+
+  generate_unwind = GetBinaryOption("-generate_unwind", argc, argv, false);
+
+  // if patch_return_addresses is on, disable generate_unwind
+  // regardless of the flag
+  if (patch_return_addresses) generate_unwind = false;
+
+  if (!generate_unwind) {
+    unwind_generator = new UnwindGenerator(*this);
+  } else {
+#ifdef __APPLE__
+    unwind_generator = new UnwindGeneratorMacOS(*this);
+#elif defined(_WIN64)
+    unwind_generator = new WinUnwindGenerator(*this);
+#else
+    WARN("Unwind generator not implemented for the current platform");
+    unwind_generator = new UnwindGenerator(*this);
+#endif
+  }
+  unwind_generator->Init(argc, argv);
 }

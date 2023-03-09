@@ -12,7 +12,7 @@ It can be fuzz on windows user-mode application without source (supports both x3
   3. [How to fuzz a target](#how-to-fuzz-with-tinyafl)
 
 ## Features of TinyAFL
-TinyAFL works similarly to WinAFL. However I use TinyInst (commit [e098622dd421f808eba027d62e126134b812f4c8](https://github.com/googleprojectzero/TinyInst/tree/e098622dd421f808eba027d62e126134b812f4c8)) for coverage. More about TinyInst can be found [here](https://github.com/googleprojectzero/TinyInst/blob/e098622dd421f808eba027d62e126134b812f4c8/README.md).
+TinyAFL works similarly to WinAFL. However I use TinyInst (commit [cfb9b15a53e5e6489f2f72c77e804fb0a7af94b5](https://github.com/googleprojectzero/TinyInst/tree/cfb9b15a53e5e6489f2f72c77e804fb0a7af94b5)) for coverage. More about TinyInst can be found [here](https://github.com/googleprojectzero/TinyInst/tree/cfb9b15a53e5e6489f2f72c77e804fb0a7af94b5/README.md).
 
 TinyAFL supports [AFLfast](https://github.com/mboehme/aflfastTinyAFL)'s power schedules by Marcel Böhme and MOpt mutator of [MOpt-AFL](https://github.com/puppet-meteor/MOpt-AFL). I add these features based on [afl++](https://github.com/AFLplusplus/AFLplusplus)
 
@@ -31,18 +31,11 @@ Although TinyAFL x64 can run both for 32bit and 64bit targets, I still recommend
 1. Open a terminal and set up your build environment (e.g. On Windows, run vcvars64.bat / vcvars32.bat)
 2. Navigate to the directory containing the source
 3. Run the following commands (change the generator according to the version of IDE and platform you want to build for):
-#### For a 32-bit build
-```
-mkdir build32
-cd build32
-cmake -G"Visual Studio 15 2017" ..
-cmake --build . --config Release
-```
-#### For a 64-bit build
+#### For a 64-bit Build
 ```
 mkdir build64
 cd build64
-cmake -G"Visual Studio 15 2017 Win64" ..
+cmake -G "Visual Studio 16 2019" -A x64 ..
 cmake --build . --config Release
 ```
 ## How to fuzz with TinyAFL
@@ -62,6 +55,7 @@ Execution control settings:
   -p schedule   - power schedules recompute a seed's performance score.
                   <explore(default), fast, coe, lin, quad, exploit, mmopt, rare>
   -f file       - location read by the fuzzed program (stdin)
+  -s            - use share memory
   -t msec       - timeout for each run
   -Q            - use binary-only instrumentation (QEMU mode)
 
@@ -88,9 +82,18 @@ tiny-afl settings:
   -instrument_module path       - path to instrumented PE
 ```
 I add the feature to only mutate the test case header when fuzz (depending on the file format). I believe that some file format exceptions only happen when fields in the header change. To see the supported instrument flags, please refer to the mode-specific documentation at TinyInst.
+
+## Shared memory mode
+
+WinAFL supports shared memory mode. This can be enabled by giving -s option to AFL.exe.
+If you are using shared memory mode then you need to make sure that in your harness you specifically read data from shared memory/stream instead of file. check a simple harness here:  
+
+https://github.com/googleprojectzero/Jackalope/blob/6d92931b2cf614699e2a023254d5ee7e20f6e34b/test.cpp#L111  
+https://github.com/googleprojectzero/Jackalope/blob/6d92931b2cf614699e2a023254d5ee7e20f6e34b/test.cpp#L41  
+
 #### Example command TinyAFL 
 ```
-AFL.exe -i in -o out -p fast -t 10000 -callconv fastcall -target_offset 0x1260 -nargs 2 -loop -persist -iterations 10000 -instrument_module demo.dll -target_module test.exe -- test.exe @@
+AFL.exe -i in -o out -p fast -t 10000 -callconv fastcall -target_offset 0x1260 -nargs 2 -loop -persist -iterations 10000 -instrument_module demo.dll -target_module test.exe -- test.exe -f @@
 ```
 #### Corpus minimization
 ```
@@ -100,11 +103,11 @@ Examples of use:
  * Typical use
   afl-cmin.py -t 5000 -i in -o min -p demo.dll -- test.exe
  * Dry-run, keep crashes only with 4 workers with a working directory:
-  afl-cmin.py -C --dry-run -w 4 --working-dir D:\dir -i in -i C:\fuzz\in -o min -p demo.dll -- test.exe @@
+  afl-cmin.py -C --dry-run -w 4 --working-dir D:\dir -i in -i C:\fuzz\in -o min -p demo.dll -- test.exe -f @@
  * Read specific file on specific location
-  afl-cmin.py -t 5000 -i in -o min -f foo.ext -p m.dll -- test.exe @@
+  afl-cmin.py -t 5000 -i in -o min -f foo.ext -p m.dll -- test.exe -f @@
  * Read from specific file with pattern
-  afl-cmin.py -t 5000 -i in -o min -f prefix-@@-foo.ext -p demo.dll -- test.exe @@
+  afl-cmin.py -t 5000 -i in -o min -f prefix-@@-foo.ext -p demo.dll -- test.exe -f @@
 ```
 #### Minimize testcase
 ```

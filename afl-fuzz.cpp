@@ -129,6 +129,8 @@ HANDLE child_handle, hnul;
 u8 *target_module;
 u8 *file_extension;
 
+BOOL use_sample_shared_memory = FALSE;
+
 u8 *in_dir,                    /* Input directory with test cases  */
 	*out_file,                  /* File to fuzz, if any             */
 	*out_dir,                   /* Working & output directory       */
@@ -192,8 +194,13 @@ u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
 u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
 HANDLE shm_handle;             /* Handle of the SHM region         */
+
+HANDLE sample_shm_handle;         /* Handle of the use SHM region         */
+char* sample_shm_str;
+
 HANDLE pipe_handle;            /* Handle of the name pipe          */
 char   *fuzzer_id = NULL;      /* The fuzzer ID or a randomized seed allowing multiple instances */
+u8* shm_sample;
 
 volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
 			clear_screen = 1,  /* Window resized?                  */
@@ -1408,6 +1415,10 @@ void remove_shm(void) {
 	if (!trace_bits) {
 		ck_free(trace_bits);
 	}
+	if (use_sample_shared_memory) {
+		UnmapViewOfFile(shm_sample);
+		CloseHandle(sample_shm_handle);
+	}
 }
 
 /* Compact trace bytes into a smaller bitmap. We effectively just drop the
@@ -1596,8 +1607,61 @@ void cull_queue(void) {
 
 }
 
+
+void setup_sample_shm() {
+	unsigned int seeds[2];
+	u64 name_seed;
+
+	SECURITY_DESCRIPTOR sd;
+	SECURITY_ATTRIBUTES sa;
+
+	// give everyone access, to allow attached processes to communicate
+	InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+	SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE);
+
+	sa.nLength = sizeof(sa);
+	sa.lpSecurityDescriptor = &sd;
+	sa.bInheritHandle = FALSE;
+
+	if (fuzzer_id == NULL) {
+		// If it is null, it means we have to generate a random seed to name the instance
+		rand_s(&seeds[0]);
+		rand_s(&seeds[1]);
+		name_seed = ((u64)seeds[0] << 32) | seeds[1];
+		fuzzer_id = (char*)alloc_printf("%I64x", name_seed);
+	}
+
+	sample_shm_str = (char*)alloc_printf("sample_afl_shm_%s", fuzzer_id);
+	//SAYF("sample_shm_str:\r\n", sample_shm_str);	
+
+	sample_shm_handle = CreateFileMapping(
+		INVALID_HANDLE_VALUE,    // use paging file
+		&sa,                     // allow access to everyone
+		PAGE_READWRITE,          // read/write access
+		0,                       // maximum object size (high-order DWORD)
+		MAX_SAMPLE_SIZE + sizeof(uint32_t),                // maximum object size (low-order DWORD)
+		sample_shm_str);        // name of mapping object
+
+	if (sample_shm_handle == NULL) {
+		FATAL("CreateFileMapping failed doe shm sample, %x", GetLastError());
+	}
+
+	shm_sample = (u8*)MapViewOfFile(
+		sample_shm_handle,          // handle to map object
+		FILE_MAP_ALL_ACCESS, // read/write permission
+		0,
+		0,
+		MAX_SAMPLE_SIZE + sizeof(uint32_t)
+	);
+	//ck_free(use_shm_str);
+	if (!shm_sample) PFATAL("shmat() for sample failed");
+
+}
+
+
 void setup_shm(void) {
 
+	atexit(remove_shm);
 	u8* shm_str = NULL;
 	u8 attempts = 0;
 
@@ -2243,6 +2307,19 @@ is unlinked and a new one is created. Otherwise, out_fd is rewound and
 truncated. */
 
 void write_to_testcase(void* mem, u32 len) {
+
+	if (use_sample_shared_memory) {
+		//this writes fuzzed data to shared memory, so that it is available to harnes program.
+		uint32_t* size_ptr = (uint32_t*)shm_sample;
+		unsigned char* data_ptr = (unsigned char*)shm_sample + 4;
+
+		if (len > MAX_SAMPLE_SIZE) len = MAX_SAMPLE_SIZE;
+
+		*size_ptr = len;
+		memcpy(data_ptr, mem, len);
+
+		return;
+	}
 
 	s32 fd = out_fd;
 
@@ -11039,6 +11116,7 @@ void usage(u8* argv0) {
 		"                  <explore(default), fast, coe, lin, quad, exploit, "
 		"mmopt, rare>\n"
 		"  -f file       - location read by the fuzzed program (stdin)\n"
+		"  -s            - use share memory\n"
 		"  -t msec       - timeout for each run\n"
 		"  -Q            - use binary-only instrumentation (QEMU mode)\n\n"
 		
@@ -11182,6 +11260,12 @@ void setup_dirs_fds(void) {
 /* Setup the output file for fuzzed data, if not using -f. */
 
 void setup_stdio_file(void) {
+
+	if (use_sample_shared_memory) {
+		// if using shared memory we dont need to set any file.so we just return.
+		return;
+	}
+
 	u8* fn = NULL;
 	if (file_extension) {
 		fn = alloc_printf("%s\\.cur_input.%s", out_dir, file_extension);
@@ -11425,9 +11509,12 @@ void detect_file_args(int argc, char** argv) {
 			if (!out_file) {
 				if (file_extension) {
 					out_file = alloc_printf("%s\\.cur_input.%s", out_dir, file_extension);
+				} 
+				else if(!use_sample_shared_memory){
+					out_file = alloc_printf("%s\\.cur_input", out_dir);
 				}
 				else {
-					out_file = alloc_printf("%s\\.cur_input", out_dir);
+					out_file = sample_shm_str;
 				}
 				
 				//out_file = alloc_printf("%s\\.cur_input", out_dir);
@@ -11515,6 +11602,9 @@ int main(int argc, char **argv){
 	}
 	target_argc = (target_opt_ind) ? argc - target_opt_ind : 0;
 	target_argv = (target_opt_ind) ? argv + target_opt_ind : NULL;
+	/*share mem*/
+	use_sample_shared_memory = GetBinaryOption("-s", argc, argv, FALSE);
+	if (use_sample_shared_memory) ACTF("using shared memory mode...");
 
 	/* Power schedule */
 	optarg = GetOption("-p", argc, argv);
@@ -11739,7 +11829,11 @@ int main(int argc, char **argv){
 	}
 
 	file_extension = GetOption("-e", argc, argv);
-
+	if (use_sample_shared_memory) {
+		if (file_extension != NULL) {
+			FATAL("Option -e and -f should not be used together");
+		}
+	}
 	out_file = GetOption("-f", argc, argv);
 
 	if (target_opt_ind == 0 || !in_dir || !out_dir || !target_module) usage(argv[0]);
@@ -11777,6 +11871,11 @@ int main(int argc, char **argv){
 	setup_shm();
 	child_handle = NULL;
 	pipe_handle = NULL;
+
+	if (use_sample_shared_memory) {
+		setup_sample_shm();
+	}
+
 	init_count_class16();
 	
 	setup_dirs_fds();
@@ -11885,7 +11984,7 @@ stop_fuzzing:
 	destroy_extras();
 	ck_free(target_path);
 	ck_free(sync_id);
-	remove_shm();
+	//remove_shm();
 
 	if (fuzzer_id != NULL && fuzzer_id != sync_id)
 		ck_free(fuzzer_id);

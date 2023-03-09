@@ -25,10 +25,48 @@ limitations under the License.
 #include <vector>
 #include <mutex>
 
+#include "common.h"
+
+
+#ifdef ARM64
+#include "arch/arm64/reg.h"
+#else
+#include "arch/x86/reg.h"
+#endif
+
 #include "macOS/machtarget.h"
 extern "C" {
   #include "macOS/mig_server.h"
 }
+
+#ifdef ARM64
+  #define MAX_NUM_REG_ARGS 8
+  #define ARCH_THREAD_STATE ARM_THREAD_STATE64
+  #define ARCH_THREAD_STATE_COUNT ARM_THREAD_STATE64_COUNT
+  #define ARCH_THREAD_STATE_T arm_thread_state64_t
+
+  #define ARCH_FPU_STATE ARM_NEON_STATE64
+  #define ARCH_FPU_STATE_COUNT ARM_NEON_STATE64_COUNT
+  #define ARCH_FPU_STATE_T arm_neon_state64_t
+
+#else
+
+  #define MAX_NUM_REG_ARGS 6
+  #define ARCH_THREAD_STATE x86_THREAD_STATE64
+  #define ARCH_THREAD_STATE_COUNT x86_THREAD_STATE64_COUNT
+  #define ARCH_THREAD_STATE_T x86_thread_state64_t
+
+  #define ARCH_FPU_STATE x86_FLOAT_STATE64
+  #define ARCH_FPU_STATE_COUNT x86_FLOAT_STATE64_COUNT
+  #define ARCH_FPU_STATE_T x86_float_state64_t
+#endif
+
+struct SavedRegisters {
+  ARCH_THREAD_STATE_T gpr_registers;
+  mach_msg_type_number_t gpr_count;
+  ARCH_FPU_STATE_T fpu_registers;
+  mach_msg_type_number_t fpu_count;
+};
 
 enum DebuggerStatus {
   DEBUGGER_NONE,
@@ -39,6 +77,17 @@ enum DebuggerStatus {
   DEBUGGER_CRASHED,
   DEBUGGER_HANGED,
   DEBUGGER_ATTACHED,
+};
+
+enum CallingConvention {
+  CALLCONV_DEFAULT,
+};
+
+enum MemoryProtection {
+  READONLY,
+  READWRITE,
+  READEXECUTE,
+  READWRITEEXECUTE
 };
 
 class SharedMemory {
@@ -132,88 +181,12 @@ public:
   Exception GetLastException() {
     return last_exception;
   }
-
-protected:
-  enum MemoryProtection {
-    READONLY,
-    READWRITE,
-    READEXECUTE,
-    READWRITEEXECUTE
-  };
-
-#ifdef ARM64
-  enum Register {
-    X0 = 0,
-    X1,
-    X2,
-    X3,
-    X4,
-    X5,
-    X6,
-    X7,
-    X8,
-    X9,
-    X10,
-    X11,
-    X12,
-    X13,
-    X14,
-    X15,
-    X16,
-    X17,
-    X18,
-    X19,
-    X20,
-    X21,
-    X22,
-    X23,
-    X24,
-    X25,
-    X26,
-    X27,
-    X28,
-    X29,  // fp
-    X30,  // lr
-    X31,  // sp
-    PC,
-    CPSR,
-    FP,   // x29
-    LR,   // x30
-    SP,   // x31
-  };
-#else
-  enum Register {
-    RAX,
-    RCX,
-    RDX,
-    RBX,
-    RSP,
-    RBP,
-    RSI,
-    RDI,
-    R8,
-    R9,
-    R10,
-    R11,
-    R12,
-    R13,
-    R14,
-    R15,
-    RIP
-  };
-#endif
   
+protected:
   enum TargetEndDetection {
     RETADDR_STACK_OVERWRITE,
     RETADDR_BREAKPOINT
   };
-
-  struct AddressRange {
-    size_t from;
-    size_t to;
-    char *data;
-  };
-
 
   virtual void OnModuleLoaded(void *module, char *module_name);
   virtual void OnModuleUnloaded(void *module) {}
@@ -254,6 +227,7 @@ protected:
   bool attach_mode;
   bool loop_mode;
   bool disable_aslr;
+  bool private_dlyd_cache;
 
   std::list<std::string> additional_env;
   
@@ -266,11 +240,15 @@ protected:
 
   void *MakeSharedMemory(mach_vm_address_t address, size_t size, MemoryProtection protection);
 
+  void *RemoteAllocate(size_t size,
+                       MemoryProtection protection,
+                       bool use_shared_memory = false);
   void *RemoteAllocateNear(uint64_t region_min,
                            uint64_t region_max,
                            size_t size,
                            MemoryProtection protection,
-			   bool use_shared_memory = false);
+                           bool use_shared_memory = false);
+  void *RemoteAllocate(size_t size);
 
   void ExtractCodeRanges(void *base_address,
                          size_t min_address,
@@ -280,10 +258,27 @@ protected:
 
   void ProtectCodeRanges(std::list<AddressRange> *executable_ranges);
 
+  void PatchPointersRemote(void *base_address, std::unordered_map<size_t, size_t>& search_replace);
+  void PatchPointersRemote(size_t min_address, size_t max_address, std::unordered_map<size_t, size_t>& search_replace);
+  
   // returns address in (potentially) instrumented code
   virtual size_t GetTranslatedAddress(size_t address) { return address; }
   
   void *GetTargetMethodAddress() { return target_address; }
+
+  bool GetSectionAndSlide(void *mach_header_address,
+                          const char *segname,
+                          const char *sectname,
+                          section_64 *ret_section,
+                          size_t *file_vm_slide);
+  
+  void SaveRegisters(SavedRegisters *registers);
+  void RestoreRegisters(SavedRegisters *registers);
+
+  void *GetSymbolAddress(void *base_address, const char *symbol_name);
+
+  void GetFunctionArguments(uint64_t *arguments, size_t num_arguments, uint64_t sp, CallingConvention callconv = CALLCONV_DEFAULT);
+  void SetFunctionArguments(uint64_t *arguments, size_t num_arguments, uint64_t sp, CallingConvention callconv = CALLCONV_DEFAULT);
 
 private:
   static std::unordered_map<task_t, Debugger*> task_to_debugger_map;
@@ -364,10 +359,10 @@ private:
   void GetLoadCommandsBuffer(void *mach_header_address, const mach_header_64 *mach_header, void **load_commands);
 
   template <class TCMD>
-  void GetLoadCommand(mach_header_64 mach_header,
+  bool GetLoadCommand(mach_header_64 mach_header,
                       void *load_commands_buffer,
                       uint32_t load_cmd_type,
-                      const char segname[16],
+                      const char *segname,
                       TCMD **ret_command);
 
   void OnDyldImageNotifier(size_t mode, unsigned long infoCount, uint64_t machHeaders[]);
@@ -381,7 +376,6 @@ private:
   void CreateException(MachException *mach_exception, Exception *exception);
   vm_prot_t MacOSProtectionFlags(MemoryProtection memory_protection);
 
-  void *GetSymbolAddress(void *base_address, char *symbol_name);
   void *GetTargetAddress(void *base_address);
 
   void RemoteProtect(void *address, size_t size, vm_prot_t protect);
@@ -406,6 +400,8 @@ private:
                                 std::list<AddressRange> *executable_ranges,
                                 size_t *code_size);
 
+  void HandleDyld(void *module);
+
   char target_module[PATH_MAX];
   char target_method[PATH_MAX];
 
@@ -420,6 +416,9 @@ private:
   
   uint64_t target_return_value;
 
+  // memory limit in bytes
+  uint64_t target_memory_limit;
+
   //DYLD SPI
   void *(*m_dyld_process_info_create)(task_t task,
                                       uint64_t timestamp,
@@ -433,6 +432,8 @@ private:
   void (*m_dyld_process_info_release)(void *info);
 
   void *m_dyld_debugger_notification;
+
+  void *dyld_address;
 };
 
 

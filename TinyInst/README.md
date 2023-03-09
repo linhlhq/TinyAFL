@@ -41,6 +41,8 @@ TinyInst assumes all instrumented modules are well-behaved in the sense that
 OR/AND (depending on the settings)
 - No data is ever stored before the top of the stack (on addresses lower than pointed to by ESP/RSP). This condition can be relaxed into "no data before (ESP/RSP - arbitrary_offset)" using the `-stack_offset` flag.
 
+TinyInst also requires DEP/NX to be enabled for the target process. If that is not already the case, you can use the `-force_dep` flag to force it on. However, in the unlikely case that the target genuinely needs DEP off to function properly, forcing it on might cause it to misbehave.
+
 ### What is the performance overhead?
 
 According to early measurements on image decoding, on a well-behaving 64-bit target with default TinyInst settings, the performance overhead was around 15% without a client and about 20% with the example coverage-collecting client. Note that this does not include the timeout introduced by initially instrumented the modules. See performance tips below for more details.
@@ -57,7 +59,7 @@ According to early measurements on image decoding, on a well-behaving 64-bit tar
 ```
 mkdir build
 cd build
-cmake -G"Visual Studio 15 2017 Win64" ..
+cmake -G "Visual Studio 16 2019" -A x64 ..
 cmake --build . --config Release
 ```
 
@@ -136,13 +138,13 @@ Called when an exception is encountered. The client must either return true (if 
 
 During these callbacks, the client can add code to the target by calling `WriteCode()`. Note that the client is responsible for saving and restoring any context (such as registers and flags clobbered in the inserted code).
 
-`OnBasicBlock`
+`InstrumentBasicBlock`
 Can be used to insert code that's going to run on a particular basic block
 
-`OnEdge`
+`InstrumentEdge`
 Can be used to insert code that's going to run on a particular edge. Note: For performance reasons, this callback is only emitted on non-deterministic edges (i.e. conditional jumps) and indirect jumps/calls (e.g. `call rax`). For edges where the next basic block is always known given the previous basic block (e.g. `jmp offset`, `call offset`), no callback will be emitted.
 
-`OnInstruction`
+`InstrumentInstruction`
 Can be used to modify the instruction or insert code before it. Depending on the return code the original instruction is either going to be emitted or not after the callback.
 
 ### Other callbacks
@@ -156,6 +158,10 @@ Called when a module gets instrumented. This happens generally when the process 
 `OnModuleUninstrumented`
 Called when instrumentation data is no longer valid and needs to be cleared. Note that this is not the same as module being unloaded as, by default, instrumentation persists across module unloads / reloads. This callback can be used to clear any instrumentation-related data in the client.
 
+### Hook API
+
+In addition to the general-purpose API documented above, TinyInst also implements a hooking API that is better suited for inspecting and modifying behavior of individual functions. This API is documented on a [separate page](https://github.com/googleprojectzero/TinyInst/blob/master/hook.md).
+
 ## Command Line Options
 
 ### Instrumentation related
@@ -166,11 +172,15 @@ Called when instrumentation data is no longer valid and needs to be cleared. Not
 
 `-patch_return_addresses` - replaces return address with the original value, causes returns to be instrumented using whatever `-indirect_instrumentation` method is specified
 
+`-generate_unwind` - Generates stack unwinding data for instrumented code (for faster C++ exception handling). Note that it might not work correctly on some older Windows versions.
+
 `-persist_instrumentation_data` (default = true) Does not reinstrument module on module unloads / reloads. Only works if the module is loaded on the same address it was loaded before.
 
 `-instrument_cross_module_calls` (default=true) If multiple `-instrument_module` modules are specified and one calls into another, jump to instrumented code of the other module without causing an exception (which would cause slowdowns).
 
 `-stack_offset` (default=0) When saving context on the stack, leave this many bytes on top of the stack (before stack pointer) unchanged.
+
+`-patch_module_entries [off|data|code|all]` Attempts to resolve slowdowns due to excessive module entries by searching for pointers to previously detected entrypoints and replacing them with their instrumented counterparts. The value of the flag controls where to searh for these pointers. Warning: Enabling this could potentially introduce instabilities to the target.
 
 ### Debugging related
 
@@ -179,6 +189,8 @@ Called when instrumentation data is no longer valid and needs to be cleared. Not
 `-trace_basic_blocks` - prints basic blocks as they get executed
 
 `-trace_module_entries` - prints all entries into instrumented code
+
+`-full_address_map` - Maintains an instruction-level map of addresses in instrumented code to addresses in the original code. Memory-heavy, but useful for debugging.
 
 ### Target method and persistence
 
@@ -199,6 +211,8 @@ TinyInst allows user to define a target method. If a target method is defined, n
 ### Other
 
 `-target_env key=value` - [currently macOS only] specifies an additional environment variable to pass to the target process. Multiple `-target_env` options can be specified to pass multiple environment variables.
+
+`-force_dep` - [Windows only] Force-enables DEP for the target process.
 
 ## Coverage module
 
@@ -242,9 +256,9 @@ Note that on modern Windows, due to CFG, all indirect jump/calls happen from the
 
 By default, when a call happens in instrumented code, the return address being written is going to be the next instruction in the *instrumented code*. This works correctly in most cases, however it will cause problems if the target process ever accesses return addresses for purposes other than return. A notable example of this is stack unwinding during exception handling on 64-bit Windows and Mac. Therefore, targets that need to catch exceptions won’t work correctly with TinyInst by default.
 
-At this time, TinyInst also has an option (exposed through `-patch_return_addresses` flag) to rewrite return addresses into their corresponding values in the non-instrumented code whenever a call occurs. Note that, without additional instrumentation, this causes an exception on every return (causing a significant slowdown). However, with `-patch_return_addresses`, return instructions also get instrumented similarly to indirect jumps/calls. While this resolves returns happening within a module, note that all returns from a non-instrumented into an instrumented module will still cause exceptions.
+This can be resolved in most cases by adding `-generate_unwind` flag, which causes TinyInst to generate and register stack unwinding / exception handling metadata for the target process. Note that `-generate_unwind` might not work correctly on some older Windows versions due to requiring UNWIND_INFO version 2.
 
-Since this is a fairly common case, more performant options for supporting exception handling will be investigated in the future. On Windows, for example, this can be accomplished using RtlAddFunctionTable / RtlAddGrowableFunctionTable / RtlInstallFunctionTableCallback APIs.
+TinyInst also has an option (exposed through `-patch_return_addresses` flag) to rewrite return addresses into their corresponding values in the non-instrumented code whenever a call occurs. Note however that this option introduces quite a large overhead, as it causes a context switch on every return (backwards edge) from an uninstrumented into an instrumented module.
 
 ## Performance tips
 
@@ -259,6 +273,5 @@ Use the OnException() callback to examine program state when the crash occurs.
 ## Disclaimer
 
 This is not an official Google product.
-
 
 
