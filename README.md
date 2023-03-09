@@ -1,6 +1,6 @@
 # TinyAFL
 
-Release Version: 1.1
+Release Version: 1.2
 
 TinyAFL is built on top of AFL and [TinyInst](https://github.com/googleprojectzero/TinyInst).
 
